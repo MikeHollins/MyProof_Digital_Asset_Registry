@@ -1,8 +1,62 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import { createHash } from "crypto";
 
 const app = express();
+
+// Security headers with Helmet
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://fonts.googleapis.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'"],
+    },
+  },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true,
+  },
+}));
+
+// Rate limiting for API endpoints
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: {
+    error: "Too many requests from this IP, please try again later.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply rate limiting to API routes
+app.use("/api", apiLimiter);
+
+// Stricter rate limiting for mutations
+const mutationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 50,
+  message: {
+    error: "Too many mutation requests, please try again later.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use("/api/proof-assets", (req, _res, next) => {
+  if (req.method === "POST") {
+    return mutationLimiter(req, _res, next);
+  }
+  next();
+});
 
 declare module 'http' {
   interface IncomingMessage {
@@ -16,6 +70,7 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false }));
 
+// Response integrity digests and logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -24,6 +79,15 @@ app.use((req, res, next) => {
   const originalResJson = res.json;
   res.json = function (bodyJson, ...args) {
     capturedJsonResponse = bodyJson;
+    
+    // Add response integrity digest (SHA-256 hash of response body)
+    // Only set Digest header to preserve helmet's CSP headers
+    if (path.startsWith("/api")) {
+      const bodyString = JSON.stringify(bodyJson);
+      const hash = createHash("sha256").update(bodyString).digest("base64");
+      res.setHeader("Digest", `sha-256=${hash}`);
+    }
+    
     return originalResJson.apply(res, [bodyJson, ...args]);
   };
 
