@@ -55,7 +55,9 @@ Preferred communication style: Simple, everyday language.
 - `GET /api/health` - System health check with database connectivity status
 - `GET /api/stats` - Dashboard statistics (total proofs, verification counts, status breakdowns)
 - `GET /api/proof-assets` - List all registered proof assets with filtering
+- `GET /api/proof-assets/:id` - Get single proof asset by ID
 - `POST /api/proof-assets` - Register new proof asset with verification
+- `POST /api/proof-assets/:id/verify` - Re-verify existing proof asset, updates verification metadata and creates audit event
 - `GET /api/audit-events` - Retrieve append-only audit log
 - `GET /api/status-lists` - W3C Bitstring Status List management
 
