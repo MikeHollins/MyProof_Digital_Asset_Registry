@@ -25,6 +25,8 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { ProofFormatBadge } from "@/components/ProofFormatBadge";
 import { CidDisplay } from "@/components/CidDisplay";
 import { VerificationDetails } from "@/components/VerificationDetails";
+import { ProofDetailsDialog } from "@/components/ProofDetailsDialog";
+import { VerifyConfirmationDialog } from "@/components/VerifyConfirmationDialog";
 import type { ProofAsset, InsertProofAsset } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -36,6 +38,10 @@ export default function Proofs() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [didFilter, setDidFilter] = useState<string>("");
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
+  const [selectedProof, setSelectedProof] = useState<ProofAsset | null>(null);
+  const [isDetailsDialogOpen, setIsDetailsDialogOpen] = useState(false);
+  const [isVerifyDialogOpen, setIsVerifyDialogOpen] = useState(false);
+  const [proofToVerify, setProofToVerify] = useState<ProofAsset | null>(null);
   const [formData, setFormData] = useState({
     subjectDid: "",
     issuerDid: "",
@@ -79,6 +85,29 @@ export default function Proofs() {
     },
   });
   
+  const verifyMutation = useMutation({
+    mutationFn: async (proofId: string) => {
+      const response = await apiRequest("POST", `/api/proof-assets/${proofId}/verify`, {});
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/proof-assets'] });
+      setIsVerifyDialogOpen(false);
+      setProofToVerify(null);
+      toast({
+        title: "Success",
+        description: "Proof asset re-verified successfully",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleRegisterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -100,6 +129,22 @@ export default function Proofs() {
     };
     
     registerMutation.mutate(payload);
+  };
+
+  const handleViewDetails = (proof: ProofAsset) => {
+    setSelectedProof(proof);
+    setIsDetailsDialogOpen(true);
+  };
+
+  const handleVerifyClick = (proof: ProofAsset) => {
+    setProofToVerify(proof);
+    setIsVerifyDialogOpen(true);
+  };
+
+  const handleConfirmVerify = () => {
+    if (proofToVerify) {
+      verifyMutation.mutate(proofToVerify.proofAssetId);
+    }
   };
 
   const filteredProofs = proofs?.filter((proof) => {
@@ -262,10 +307,22 @@ export default function Proofs() {
                 </div>
               </CardContent>
               <CardFooter className="pt-3 border-t border-card-border flex gap-2">
-                <Button variant="outline" size="sm" className="flex-1" data-testid={`button-details-${proof.proofAssetId}`}>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="flex-1" 
+                  onClick={() => handleViewDetails(proof)}
+                  data-testid={`button-details-${proof.proofAssetId}`}
+                >
                   View Details
                 </Button>
-                <Button variant="outline" size="sm" className="flex-1" data-testid={`button-verify-${proof.proofAssetId}`}>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="flex-1"
+                  onClick={() => handleVerifyClick(proof)}
+                  data-testid={`button-verify-${proof.proofAssetId}`}
+                >
                   Verify
                 </Button>
               </CardFooter>
@@ -339,10 +396,20 @@ export default function Proofs() {
                       </td>
                       <td className="p-4 text-right">
                         <div className="flex justify-end gap-2">
-                          <Button variant="ghost" size="sm" data-testid={`button-view-${proof.proofAssetId}`}>
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => handleViewDetails(proof)}
+                            data-testid={`button-view-${proof.proofAssetId}`}
+                          >
                             View
                           </Button>
-                          <Button variant="ghost" size="sm" data-testid={`button-verify-${proof.proofAssetId}`}>
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => handleVerifyClick(proof)}
+                            data-testid={`button-verify-${proof.proofAssetId}`}
+                          >
                             Verify
                           </Button>
                         </div>
@@ -356,6 +423,22 @@ export default function Proofs() {
         </Card>
       )}
       
+      {/* Proof Details Dialog */}
+      <ProofDetailsDialog
+        proof={selectedProof}
+        open={isDetailsDialogOpen}
+        onOpenChange={setIsDetailsDialogOpen}
+      />
+
+      {/* Verify Confirmation Dialog */}
+      <VerifyConfirmationDialog
+        open={isVerifyDialogOpen}
+        onOpenChange={setIsVerifyDialogOpen}
+        onConfirm={handleConfirmVerify}
+        isVerifying={verifyMutation.isPending}
+        proofId={proofToVerify?.proofAssetId || ""}
+      />
+
       {/* Registration Dialog */}
       <Dialog open={isRegisterModalOpen} onOpenChange={setIsRegisterModalOpen}>
         <DialogContent className="max-w-2xl">

@@ -14,6 +14,7 @@ export interface IStorage {
   getProofAssets(): Promise<ProofAsset[]>;
   getRecentProofAssets(limit?: number): Promise<ProofAsset[]>;
   createProofAsset(proof: Partial<ProofAsset>): Promise<ProofAsset>;
+  updateProofAsset(id: string, updates: Partial<ProofAsset>): Promise<ProofAsset>;
   updateProofAssetStatus(id: string, status: string): Promise<void>;
   
   // Audit Events
@@ -88,6 +89,20 @@ export class MemStorage implements IStorage {
     };
     this.proofAssets.set(id, asset);
     return asset;
+  }
+
+  async updateProofAsset(id: string, updates: Partial<ProofAsset>): Promise<ProofAsset> {
+    const asset = this.proofAssets.get(id);
+    if (!asset) {
+      throw new Error(`Proof asset ${id} not found`);
+    }
+    const updated: ProofAsset = {
+      ...asset,
+      ...updates,
+      updatedAt: new Date(),
+    };
+    this.proofAssets.set(id, updated);
+    return updated;
   }
 
   async updateProofAssetStatus(id: string, status: string): Promise<void> {
@@ -206,6 +221,18 @@ export class PostgresStorage implements IStorage {
 
   async createProofAsset(proof: Partial<ProofAsset>): Promise<ProofAsset> {
     const results = await db.insert(proofAssetsTable).values(proof as any).returning();
+    return results[0] as ProofAsset;
+  }
+
+  async updateProofAsset(id: string, updates: Partial<ProofAsset>): Promise<ProofAsset> {
+    const results = await db.update(proofAssetsTable)
+      .set({ ...updates, updatedAt: new Date() } as any)
+      .where(eq(proofAssetsTable.proofAssetId, id))
+      .returning();
+    
+    if (results.length === 0) {
+      throw new Error(`Proof asset ${id} not found`);
+    }
     return results[0] as ProofAsset;
   }
 
