@@ -67,6 +67,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Re-verify a proof asset
+  app.post("/api/proof-assets/:id/verify", async (req, res) => {
+    try {
+      const proof = await storage.getProofAsset(req.params.id);
+      if (!proof) {
+        return res.status(404).json({ error: "Proof asset not found" });
+      }
+
+      // Re-verify using stored proof data
+      if (!proof.proofUri) {
+        return res.status(400).json({ 
+          error: "Cannot re-verify: proof data not available" 
+        });
+      }
+
+      const verification = await verifyProof(
+        {
+          proof_format: proof.proofFormat,
+          proof_digest: proof.proofDigest,
+          digest_alg: proof.digestAlg,
+          proof_uri: proof.proofUri,
+        },
+        {
+          issuerDid: proof.issuerDid,
+        }
+      );
+
+      // Update verification metadata
+      const updatedProof = await storage.updateProofAsset(proof.proofAssetId, {
+        verificationStatus: verification.ok ? "verified" : "failed",
+        verificationAlgorithm: verification.algorithm,
+        verificationPublicKeyDigest: verification.publicKeyDigest,
+        verificationTimestamp: verification.verifiedAt ? new Date(verification.verifiedAt) : new Date(),
+        verificationMetadata: verification.derivedFacts,
+      });
+
+      // Create audit event
+      await storage.createAuditEvent({
+        eventType: "STATUS_UPDATE",
+        assetId: proof.proofAssetId,
+        payload: {
+          old_status: proof.verificationStatus,
+          new_status: verification.ok ? "verified" : "failed",
+          verification_algorithm: verification.algorithm,
+          re_verification: true,
+        },
+        traceId: crypto.randomUUID(),
+      });
+
+      res.json({
+        success: true,
+        verificationStatus: verification.ok ? "verified" : "failed",
+        verificationResult: verification,
+        proof: updatedProof,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Create new proof asset
   app.post("/api/proof-assets", async (req, res) => {
     try {
