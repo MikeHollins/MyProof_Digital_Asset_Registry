@@ -221,15 +221,25 @@ export class PostgresStorage implements IStorage {
   }
 
   async createAuditEvent(event: Partial<AuditEvent>): Promise<AuditEvent> {
+    const { computeAuditEventHash } = await import("./crypto-utils");
+    
     // Get the last event to link hashes
     const lastEvents = await db.select().from(auditEventsTable).orderBy(desc(auditEventsTable.timestamp)).limit(1);
     const previousHash = lastEvents.length > 0 ? lastEvents[0].eventHash : null;
     
-    // For now, use a simple hash (will be improved in task 3)
-    const eventHash = crypto.randomUUID();
+    // Compute cryptographic hash for this event
+    const timestamp = new Date();
+    const eventHash = await computeAuditEventHash(
+      event.eventType!,
+      event.assetId || null,
+      event.payload || {},
+      previousHash,
+      timestamp
+    );
     
     const results = await db.insert(auditEventsTable).values({
       ...event,
+      timestamp,
       previousHash,
       eventHash,
     } as any).returning();

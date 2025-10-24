@@ -180,6 +180,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Verify audit chain integrity
+  app.get("/api/audit-events/verify-chain", async (_req, res) => {
+    try {
+      const { verifyAuditChainLink } = await import("./crypto-utils");
+      const events = await storage.getAuditEvents();
+      
+      // Sort events in chronological order (oldest first)
+      const sortedEvents = [...events].reverse();
+      
+      // Verify each event's hash and previousHash linkage
+      const results = await Promise.all(sortedEvents.map(async (event, index) => {
+        // Verify the event's own hash is correct
+        const hashValid = await verifyAuditChainLink({
+          eventType: event.eventType,
+          assetId: event.assetId,
+          payload: event.payload,
+          previousHash: event.previousHash,
+          eventHash: event.eventHash,
+          timestamp: event.timestamp,
+        });
+        
+        // Verify previousHash matches the prior event's hash
+        let linkageValid = true;
+        let linkageReason = "";
+        
+        if (index === 0) {
+          // First event should have null previousHash
+          linkageValid = event.previousHash === null;
+          if (!linkageValid) linkageReason = "First event should have null previousHash";
+        } else {
+          // Subsequent events should link to previous event's hash
+          const previousEvent = sortedEvents[index - 1];
+          linkageValid = event.previousHash === previousEvent.eventHash;
+          if (!linkageValid) {
+            linkageReason = `previousHash mismatch: expected ${previousEvent.eventHash}, got ${event.previousHash}`;
+          }
+        }
+        
+        const isValid = hashValid && linkageValid;
+        
+        return {
+          eventId: event.eventId,
+          eventType: event.eventType,
+          isValid,
+          hashValid,
+          linkageValid,
+          linkageReason: linkageReason || undefined,
+          index,
+        };
+      }));
+      
+      const allValid = results.every(r => r.isValid);
+      const invalidEvents = results.filter(r => !r.isValid);
+      
+      res.json({
+        chainValid: allValid,
+        totalEvents: events.length,
+        validEvents: results.filter(r => r.isValid).length,
+        invalidEvents: invalidEvents.length,
+        details: results,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Get status lists
   app.get("/api/status-lists", async (_req, res) => {
     try {
