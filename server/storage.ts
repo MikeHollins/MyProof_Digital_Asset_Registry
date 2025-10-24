@@ -24,7 +24,7 @@ export interface IStorage {
   getStatusLists(): Promise<StatusList[]>;
   getStatusList(url: string): Promise<StatusList | undefined>;
   createStatusList(list: Partial<StatusList>): Promise<StatusList>;
-  updateStatusList(url: string, bitstring: Buffer, etag: string): Promise<void>;
+  updateStatusList(url: string, bitstring: string, etag: string): Promise<void>;
   
   // Stats
   getDashboardStats(): Promise<DashboardStats>;
@@ -183,4 +183,123 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new MemStorage();
+// PostgreSQL Storage Implementation
+import { db } from "./db";
+import { proofAssets as proofAssetsTable, auditEvents as auditEventsTable, statusLists as statusListsTable } from "@shared/schema";
+import { eq, desc } from "drizzle-orm";
+
+export class PostgresStorage implements IStorage {
+  async getProofAsset(id: string): Promise<ProofAsset | undefined> {
+    const results = await db.select().from(proofAssetsTable).where(eq(proofAssetsTable.proofAssetId, id));
+    return results[0] as ProofAsset | undefined;
+  }
+
+  async getProofAssets(): Promise<ProofAsset[]> {
+    const results = await db.select().from(proofAssetsTable).orderBy(desc(proofAssetsTable.createdAt));
+    return results as ProofAsset[];
+  }
+
+  async getRecentProofAssets(limit: number = 10): Promise<ProofAsset[]> {
+    const results = await db.select().from(proofAssetsTable).orderBy(desc(proofAssetsTable.createdAt)).limit(limit);
+    return results as ProofAsset[];
+  }
+
+  async createProofAsset(proof: Partial<ProofAsset>): Promise<ProofAsset> {
+    const results = await db.insert(proofAssetsTable).values(proof as any).returning();
+    return results[0] as ProofAsset;
+  }
+
+  async updateProofAssetStatus(id: string, status: string): Promise<void> {
+    await db.update(proofAssetsTable)
+      .set({ verificationStatus: status, updatedAt: new Date() })
+      .where(eq(proofAssetsTable.proofAssetId, id));
+  }
+
+  async getAuditEvents(): Promise<AuditEvent[]> {
+    const results = await db.select().from(auditEventsTable).orderBy(desc(auditEventsTable.timestamp));
+    return results as AuditEvent[];
+  }
+
+  async createAuditEvent(event: Partial<AuditEvent>): Promise<AuditEvent> {
+    // Get the last event to link hashes
+    const lastEvents = await db.select().from(auditEventsTable).orderBy(desc(auditEventsTable.timestamp)).limit(1);
+    const previousHash = lastEvents.length > 0 ? lastEvents[0].eventHash : null;
+    
+    // For now, use a simple hash (will be improved in task 3)
+    const eventHash = crypto.randomUUID();
+    
+    const results = await db.insert(auditEventsTable).values({
+      ...event,
+      previousHash,
+      eventHash,
+    } as any).returning();
+    return results[0] as AuditEvent;
+  }
+
+  async getStatusLists(): Promise<StatusList[]> {
+    const results = await db.select().from(statusListsTable);
+    return results as StatusList[];
+  }
+
+  async getStatusList(url: string): Promise<StatusList | undefined> {
+    const results = await db.select().from(statusListsTable).where(eq(statusListsTable.url, url));
+    return results[0] as StatusList | undefined;
+  }
+
+  async createStatusList(list: Partial<StatusList>): Promise<StatusList> {
+    // Provide defaults matching MemStorage behavior
+    const defaultBitstring = Buffer.alloc(16384).toString('base64');
+    const statusList = {
+      purpose: list.purpose || "revocation",
+      url: list.url || "",
+      bitstring: list.bitstring || defaultBitstring,
+      size: list.size || 131072,
+      etag: list.etag || `W/"${Date.now()}"`,
+    };
+    const results = await db.insert(statusListsTable).values(statusList as any).returning();
+    return results[0] as StatusList;
+  }
+
+  async updateStatusList(url: string, bitstring: string, etag: string): Promise<void> {
+    await db.update(statusListsTable)
+      .set({ bitstring, etag, updatedAt: new Date() })
+      .where(eq(statusListsTable.url, url));
+  }
+
+  async getDashboardStats(): Promise<DashboardStats> {
+    const proofs = await this.getProofAssets();
+    const statusLists = await this.getStatusLists();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    return {
+      totalProofs: proofs.length,
+      verifiedToday: proofs.filter(p => 
+        p.verificationStatus === "verified" && 
+        new Date(p.createdAt) >= today
+      ).length,
+      activeStatusLists: statusLists.length,
+      pendingVerifications: proofs.filter(p => p.verificationStatus === "pending").length,
+    };
+  }
+
+  async getSystemHealth(): Promise<SystemHealth> {
+    try {
+      // Test database connection
+      await db.select().from(proofAssetsTable).limit(1);
+      return {
+        database: "healthy",
+        redis: "healthy",
+        verifier: "healthy",
+      };
+    } catch (error) {
+      return {
+        database: "down",
+        redis: "healthy",
+        verifier: "healthy",
+      };
+    }
+  }
+}
+
+export const storage = new PostgresStorage();

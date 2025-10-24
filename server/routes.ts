@@ -3,12 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertProofAssetSchema, updateStatusListSchema } from "@shared/schema";
 import { z } from "zod";
-
-// Simple hash function for commitment (in production, use RFC 8785 JCS + SHA-256)
-function generateCommitment(data: any): string {
-  const str = JSON.stringify(data);
-  return Buffer.from(str).toString('base64url').slice(0, 32);
-}
+import { generateProofCommitment, generateCID } from "./crypto-utils";
 
 // Simple proof verification (stubs for MVP)
 async function verifyProof(proofRef: any): Promise<{ ok: boolean; reason?: string }> {
@@ -98,7 +93,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Generate commitment
+      // Generate commitment using RFC 8785 JCS + CIDv1
       const commitmentData = {
         policy_cid: body.policyCid,
         policy_hash: body.policyHash,
@@ -109,7 +104,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         license: body.license || {},
         proof_id: crypto.randomUUID(),
       };
-      const proofAssetCommitment = generateCommitment(commitmentData);
+      const proofAssetCommitment = await generateProofCommitment(commitmentData);
 
       // Allocate status list reference
       const statusRef = allocateStatusRef("revocation");
