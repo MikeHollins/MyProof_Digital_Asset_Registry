@@ -1,0 +1,237 @@
+import type { Express } from "express";
+import { createServer, type Server } from "http";
+import { storage } from "./storage";
+import { insertProofAssetSchema, updateStatusListSchema } from "@shared/schema";
+import { z } from "zod";
+
+// Simple hash function for commitment (in production, use RFC 8785 JCS + SHA-256)
+function generateCommitment(data: any): string {
+  const str = JSON.stringify(data);
+  return Buffer.from(str).toString('base64url').slice(0, 32);
+}
+
+// Simple proof verification (stubs for MVP)
+async function verifyProof(proofRef: any): Promise<{ ok: boolean; reason?: string }> {
+  // In production: call actual verification services
+  // For MVP: accept all proofs except those explicitly marked as invalid
+  if (proofRef.proof_digest === "INVALID") {
+    return { ok: false, reason: "Invalid proof digest" };
+  }
+  return { ok: true };
+}
+
+// Status list allocation
+function allocateStatusRef(purpose: string): { statusListUrl: string; statusListIndex: string; statusPurpose: string } {
+  const baseUrl = process.env.STATUS_BASE_URL || "https://status.example.com/lists";
+  const index = Math.floor(Math.random() * 100000);
+  return {
+    statusListUrl: `${baseUrl}/${purpose}/default`,
+    statusListIndex: String(index),
+    statusPurpose: purpose,
+  };
+}
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  // Health check
+  app.get("/api/health", async (_req, res) => {
+    const health = await storage.getSystemHealth();
+    res.json({ ok: true, ...health });
+  });
+
+  // Dashboard stats
+  app.get("/api/stats", async (_req, res) => {
+    try {
+      const stats = await storage.getDashboardStats();
+      res.json(stats);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get all proof assets
+  app.get("/api/proof-assets", async (_req, res) => {
+    try {
+      const proofs = await storage.getProofAssets();
+      res.json(proofs);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get recent proof assets
+  app.get("/api/proof-assets/recent", async (_req, res) => {
+    try {
+      const proofs = await storage.getRecentProofAssets(10);
+      res.json(proofs);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get single proof asset
+  app.get("/api/proof-assets/:id", async (req, res) => {
+    try {
+      const proof = await storage.getProofAsset(req.params.id);
+      if (!proof) {
+        return res.status(404).json({ error: "Proof asset not found" });
+      }
+      res.json(proof);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Create new proof asset
+  app.post("/api/proof-assets", async (req, res) => {
+    try {
+      // Validate request body
+      const body = insertProofAssetSchema.parse(req.body);
+
+      // Verify the proof
+      const verification = await verifyProof(body.verifier_proof_ref);
+      if (!verification.ok) {
+        return res.status(400).json({
+          type: "about:blank",
+          title: "Invalid proof",
+          status: 400,
+          detail: verification.reason || "Proof verification failed",
+        });
+      }
+
+      // Generate commitment
+      const commitmentData = {
+        policy_cid: body.policyCid,
+        policy_hash: body.policyHash,
+        constraint_cid: body.constraintCid,
+        constraint_hash: body.constraintHash,
+        circuit_cid: body.circuitCid,
+        schema_cid: body.schemaCid,
+        license: body.license || {},
+        proof_id: crypto.randomUUID(),
+      };
+      const proofAssetCommitment = generateCommitment(commitmentData);
+
+      // Allocate status list reference
+      const statusRef = allocateStatusRef("revocation");
+
+      // Create status list if it doesn't exist
+      let statusList = await storage.getStatusList(statusRef.statusListUrl);
+      if (!statusList) {
+        statusList = await storage.createStatusList({
+          purpose: "revocation",
+          url: statusRef.statusListUrl,
+          bitstring: Buffer.alloc(16384).toString('base64'), // 131072 bits, base64-encoded
+          size: 131072,
+          etag: `W/"${Date.now()}"`,
+        });
+      }
+
+      // Create proof asset
+      const proof = await storage.createProofAsset({
+        proofAssetCommitment,
+        issuerDid: body.issuerDid,
+        subjectBinding: body.subjectBinding,
+        proofFormat: body.proofFormat,
+        proofDigest: body.proofDigest,
+        digestAlg: body.digestAlg,
+        proofUri: body.verifier_proof_ref.proof_uri,
+        constraintHash: body.constraintHash,
+        constraintCid: body.constraintCid,
+        policyHash: body.policyHash,
+        policyCid: body.policyCid,
+        circuitOrSchemaId: body.circuitOrSchemaId,
+        circuitCid: body.circuitCid,
+        schemaCid: body.schemaCid,
+        license: body.license,
+        statusListUrl: statusRef.statusListUrl,
+        statusListIndex: statusRef.statusListIndex,
+        statusPurpose: statusRef.statusPurpose,
+        verificationStatus: "verified",
+      });
+
+      // Create audit event
+      await storage.createAuditEvent({
+        eventType: "MINT",
+        assetId: proof.proofAssetId,
+        payload: {
+          issuer_did: proof.issuerDid,
+          proof_format: proof.proofFormat,
+          commitment: proofAssetCommitment,
+        },
+        traceId: crypto.randomUUID(),
+      });
+
+      res.status(201).json(proof);
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          type: "about:blank",
+          title: "Validation error",
+          status: 400,
+          detail: error.errors[0]?.message || "Invalid request body",
+        });
+      }
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get audit events
+  app.get("/api/audit-events", async (_req, res) => {
+    try {
+      const events = await storage.getAuditEvents();
+      res.json(events);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get status lists
+  app.get("/api/status-lists", async (_req, res) => {
+    try {
+      const lists = await storage.getStatusLists();
+      res.json(lists);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Update status list
+  app.post("/api/status-lists/:purpose/update", async (req, res) => {
+    try {
+      const body = updateStatusListSchema.parse(req.body);
+      
+      let statusList = await storage.getStatusList(body.statusListUrl);
+      if (!statusList) {
+        return res.status(404).json({ error: "Status list not found" });
+      }
+
+      // Decode base64 bitstring, apply operations, re-encode
+      const bitstring = Buffer.from(statusList.bitstring, 'base64');
+      for (const op of body.operations) {
+        const byteIndex = Math.floor(op.index / 8);
+        const bitIndex = op.index % 8;
+        
+        if (op.op === "set") {
+          bitstring[byteIndex] |= (1 << bitIndex);
+        } else if (op.op === "clear") {
+          bitstring[byteIndex] &= ~(1 << bitIndex);
+        } else if (op.op === "flip") {
+          bitstring[byteIndex] ^= (1 << bitIndex);
+        }
+      }
+
+      const etag = `W/"${Date.now()}"`;
+      await storage.updateStatusList(body.statusListUrl, bitstring.toString('base64'), etag);
+
+      res.json({ updated: true, etag });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid request body" });
+      }
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  const httpServer = createServer(app);
+  return httpServer;
+}
