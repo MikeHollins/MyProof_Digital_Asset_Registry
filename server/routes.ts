@@ -246,6 +246,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Check status of a specific proof asset
+  app.get("/api/proof-assets/:id/status", async (req, res) => {
+    try {
+      const proof = await storage.getProofAsset(req.params.id);
+      if (!proof) {
+        return res.status(404).json({ error: "Proof asset not found" });
+      }
+      
+      // Get the status list
+      const statusList = await storage.getStatusList(proof.statusListUrl);
+      if (!statusList) {
+        return res.status(404).json({ error: "Status list not found" });
+      }
+      
+      // Check the status using bitstring utilities
+      const { getCredentialStatus } = await import("./bitstring-utils");
+      const status = getCredentialStatus(
+        statusList.bitstring,
+        parseInt(proof.statusListIndex),
+        proof.statusPurpose
+      );
+      
+      res.json({
+        proofAssetId: proof.proofAssetId,
+        statusListUrl: proof.statusListUrl,
+        statusListIndex: proof.statusListIndex,
+        ...status,
+        checkedAt: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Get status lists
   app.get("/api/status-lists", async (_req, res) => {
     try {
@@ -266,23 +300,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Status list not found" });
       }
 
-      // Decode base64 bitstring, apply operations, re-encode
+      // Decode base64 bitstring, apply operations using utilities, re-encode
+      const { applyOperations } = await import("./bitstring-utils");
       const bitstring = Buffer.from(statusList.bitstring, 'base64');
-      for (const op of body.operations) {
-        const byteIndex = Math.floor(op.index / 8);
-        const bitIndex = op.index % 8;
-        
-        if (op.op === "set") {
-          bitstring[byteIndex] |= (1 << bitIndex);
-        } else if (op.op === "clear") {
-          bitstring[byteIndex] &= ~(1 << bitIndex);
-        } else if (op.op === "flip") {
-          bitstring[byteIndex] ^= (1 << bitIndex);
-        }
-      }
+      applyOperations(bitstring, body.operations);
 
       const etag = `W/"${Date.now()}"`;
       await storage.updateStatusList(body.statusListUrl, bitstring.toString('base64'), etag);
+
+      // Create audit event for status update
+      await storage.createAuditEvent({
+        eventType: "STATUS_UPDATE",
+        assetId: null, // Could be linked to specific proof if available
+        payload: {
+          status_list_url: body.statusListUrl,
+          operations: body.operations,
+          purpose: req.params.purpose,
+        },
+        traceId: crypto.randomUUID(),
+      });
 
       res.json({ updated: true, etag });
     } catch (error: any) {
