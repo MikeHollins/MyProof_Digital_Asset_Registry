@@ -4,16 +4,7 @@ import { storage } from "./storage";
 import { insertProofAssetSchema, updateStatusListSchema } from "@shared/schema";
 import { z } from "zod";
 import { generateProofCommitment, generateCID } from "./crypto-utils";
-
-// Simple proof verification (stubs for MVP)
-async function verifyProof(proofRef: any): Promise<{ ok: boolean; reason?: string }> {
-  // In production: call actual verification services
-  // For MVP: accept all proofs except those explicitly marked as invalid
-  if (proofRef.proof_digest === "INVALID") {
-    return { ok: false, reason: "Invalid proof digest" };
-  }
-  return { ok: true };
-}
+import { verifyProof } from "./proof-verification";
 
 // Status list allocation
 function allocateStatusRef(purpose: string): { statusListUrl: string; statusListIndex: string; statusPurpose: string } {
@@ -82,8 +73,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Validate request body
       const body = insertProofAssetSchema.parse(req.body);
 
-      // Verify the proof
-      const verification = await verifyProof(body.verifier_proof_ref);
+      // Verify the proof with issuer context
+      const verification = await verifyProof(body.verifier_proof_ref, {
+        issuerDid: body.issuerDid,
+      });
+      
       if (!verification.ok) {
         return res.status(400).json({
           type: "about:blank",
@@ -121,7 +115,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Create proof asset
+      // Create proof asset with verification metadata
       const proof = await storage.createProofAsset({
         proofAssetCommitment,
         issuerDid: body.issuerDid,
@@ -142,6 +136,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         statusListIndex: statusRef.statusListIndex,
         statusPurpose: statusRef.statusPurpose,
         verificationStatus: "verified",
+        verificationAlgorithm: verification.algorithm,
+        verificationPublicKeyDigest: verification.publicKeyDigest,
+        verificationTimestamp: verification.verifiedAt ? new Date(verification.verifiedAt) : new Date(),
+        verificationMetadata: verification.derivedFacts,
       });
 
       // Create audit event

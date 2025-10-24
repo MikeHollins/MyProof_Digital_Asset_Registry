@@ -28,6 +28,10 @@ export const proofAssets = pgTable("proof_assets", {
   attestations: jsonb("attestations"),
   auditCid: text("audit_cid"),
   verificationStatus: text("verification_status").default("pending"),
+  verificationAlgorithm: text("verification_algorithm"),
+  verificationPublicKeyDigest: text("verification_public_key_digest"),
+  verificationTimestamp: timestamp("verification_timestamp", { withTimezone: true }),
+  verificationMetadata: jsonb("verification_metadata"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
@@ -102,6 +106,13 @@ export const insertProofAssetSchema = createInsertSchema(proofAssets, {
   createdAt: true,
   updatedAt: true,
   verificationStatus: true,
+  verificationAlgorithm: true,
+  verificationPublicKeyDigest: true,
+  verificationTimestamp: true,
+  verificationMetadata: true,
+  statusListUrl: true,
+  statusListIndex: true,
+  statusPurpose: true,
 }).extend({
   verifier_proof_ref: verifierProofRefSchema,
 });

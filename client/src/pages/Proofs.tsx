@@ -24,6 +24,7 @@ import { useToast } from "@/hooks/use-toast";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ProofFormatBadge } from "@/components/ProofFormatBadge";
 import { CidDisplay } from "@/components/CidDisplay";
+import { VerificationDetails } from "@/components/VerificationDetails";
 import type { ProofAsset, InsertProofAsset } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -82,26 +83,20 @@ export default function Proofs() {
     e.preventDefault();
     
     const payload: InsertProofAsset = {
-      subjectDid: formData.subjectDid,
       issuerDid: formData.issuerDid,
       proofFormat: formData.proofFormat as any,
-      contentCommitment: formData.contentCommitment,
-      proofData: JSON.parse(formData.proofData || "{}"),
-      subjectBinding: "",
+      subjectBinding: formData.subjectDid,
       verifier_proof_ref: {
         proof_format: formData.proofFormat as any,
         proof_digest: formData.contentCommitment,
         digest_alg: "sha2-256",
+        proof_uri: formData.proofData,
       },
-      constraintHash: "",
-      constraintCid: "",
-      policyHash: "",
-      policyCid: "",
+      constraintHash: crypto.randomUUID(),
+      policyHash: crypto.randomUUID(),
+      policyCid: `baga${crypto.randomUUID().replace(/-/g, '')}`,
       digestAlg: "sha2-256",
       proofDigest: formData.contentCommitment,
-      statusListUrl: "",
-      statusListIndex: "",
-      statusPurpose: "revocation",
     };
     
     registerMutation.mutate(payload);
@@ -257,7 +252,13 @@ export default function Proofs() {
                   </code>
                 </div>
                 <div>
-                  <StatusBadge status={proof.verificationStatus as any} />
+                  <VerificationDetails
+                    status={proof.verificationStatus as any}
+                    algorithm={proof.verificationAlgorithm}
+                    publicKeyDigest={proof.verificationPublicKeyDigest}
+                    timestamp={proof.verificationTimestamp}
+                    metadata={proof.verificationMetadata}
+                  />
                 </div>
               </CardContent>
               <CardFooter className="pt-3 border-t border-card-border flex gap-2">
@@ -325,7 +326,13 @@ export default function Proofs() {
                         </code>
                       </td>
                       <td className="p-4">
-                        <StatusBadge status={proof.verificationStatus as any} />
+                        <VerificationDetails
+                          status={proof.verificationStatus as any}
+                          algorithm={proof.verificationAlgorithm}
+                          publicKeyDigest={proof.verificationPublicKeyDigest}
+                          timestamp={proof.verificationTimestamp}
+                          metadata={proof.verificationMetadata}
+                        />
                       </td>
                       <td className="p-4 text-sm text-muted-foreground">
                         {new Date(proof.createdAt).toLocaleDateString()}
