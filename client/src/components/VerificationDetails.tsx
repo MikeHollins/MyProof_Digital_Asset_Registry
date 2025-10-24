@@ -70,12 +70,43 @@ export function VerificationDetails({
             </div>
           )}
           
-          {metadata?.issuer && (
-            <div className="text-xs pt-2 border-t">
-              <div className="font-medium">Issuer</div>
-              <div className="text-muted-foreground font-mono text-xs break-all">
-                {metadata.issuer}
-              </div>
+          {metadata && (
+            <div className="text-xs pt-2 border-t space-y-2">
+              {metadata.issuer && (
+                <div>
+                  <div className="font-medium">Issuer</div>
+                  <div className="text-muted-foreground font-mono text-xs break-all">
+                    {metadata.issuer}
+                  </div>
+                </div>
+              )}
+              
+              {metadata.subject && (
+                <div>
+                  <div className="font-medium">Subject</div>
+                  <div className="text-muted-foreground font-mono text-xs break-all">
+                    {metadata.subject}
+                  </div>
+                </div>
+              )}
+              
+              {metadata.audience && (
+                <div>
+                  <div className="font-medium">Audience</div>
+                  <div className="text-muted-foreground font-mono text-xs break-all">
+                    {metadata.audience}
+                  </div>
+                </div>
+              )}
+              
+              {metadata.expiresAt && (
+                <div>
+                  <div className="font-medium">Expires At</div>
+                  <div className="text-muted-foreground text-xs">
+                    {new Date(metadata.expiresAt).toLocaleString()}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -100,6 +100,16 @@ export const verifierProofRefSchema = z.object({
 export const insertProofAssetSchema = createInsertSchema(proofAssets, {
   proofFormat: proofFormatEnum,
   digestAlg: digestAlgEnum,
+  subjectBinding: z.string().optional(),
+  proofUri: z.string().optional(),
+  constraintCid: z.string().optional(),
+  circuitOrSchemaId: z.string().optional(),
+  circuitCid: z.string().optional(),
+  schemaCid: z.string().optional(),
+  contentCids: z.array(z.string()).optional(),
+  license: z.any().optional(),
+  attestations: z.any().optional(),
+  auditCid: z.string().optional(),
 }).omit({
   proofAssetId: true,
   proofAssetCommitment: true,
