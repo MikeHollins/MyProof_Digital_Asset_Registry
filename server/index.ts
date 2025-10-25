@@ -179,6 +179,10 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   
   // Register demo routes (requires receipt keys to be initialized)
   await registerDemoRoutes(app);
+  
+  // Register admin API key management routes
+  const { registerAdminApiKeys } = await import("./routes-admin-apikeys");
+  registerAdminApiKeys(app);
 
   // Error handling middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

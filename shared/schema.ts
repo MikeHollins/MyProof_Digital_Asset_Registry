@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, bigint, jsonb, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, bigint, jsonb, timestamp, index, uniqueIndex, uuid, boolean, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -82,6 +82,33 @@ export const jtiReplay = pgTable("jti_replay", {
   expAtIdx: index("ix_exp_at").on(table.expAt),
 }));
 
+// Partners - API key partner organizations
+export const partners = pgTable("partners", {
+  partnerId: uuid("partner_id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  contactEmail: text("contact_email"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// API Keys - Scoped API authentication with Argon2id hashing
+export const apiKeys = pgTable("api_keys", {
+  keyId: varchar("key_id", { length: 64 }).primaryKey(),
+  partnerId: uuid("partner_id").notNull().references(() => partners.partnerId),
+  secretHash: text("secret_hash").notNull(),
+  scopes: text("scopes").notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("active"),
+  notBefore: timestamp("not_before", { withTimezone: true }).notNull().defaultNow(),
+  notAfter: timestamp("not_after", { withTimezone: true }),
+  ratePerMinute: integer("rate_per_minute").notNull().default(300),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+}, (table) => ({
+  partnerIdx: index("ix_api_keys_partner").on(table.partnerId),
+  statusIdx: index("ix_api_keys_status").on(table.status),
+}));
+
 // Zod Schemas for API validation
 export const proofFormatEnum = z.enum([
   'ZK_PROOF',
@@ -155,6 +182,18 @@ export const updateStatusListSchema = z.object({
   operations: z.array(statusListOperationSchema),
 });
 
+export const insertPartnerSchema = createInsertSchema(partners, {
+  name: z.string().min(2),
+  contactEmail: z.string().email().optional(),
+}).omit({ partnerId: true, createdAt: true, updatedAt: true });
+
+export const insertApiKeySchema = createInsertSchema(apiKeys).omit({ 
+  keyId: true, 
+  secretHash: true, 
+  createdAt: true, 
+  lastUsedAt: true 
+});
+
 // TypeScript types
 export type ProofAsset = typeof proofAssets.$inferSelect;
 export type InsertProofAsset = z.infer<typeof insertProofAssetSchema>;
@@ -162,6 +201,10 @@ export type AuditEvent = typeof auditEvents.$inferSelect;
 export type InsertAuditEvent = z.infer<typeof insertAuditEventSchema>;
 export type StatusList = typeof statusLists.$inferSelect;
 export type JtiReplay = typeof jtiReplay.$inferSelect;
+export type Partner = typeof partners.$inferSelect;
+export type InsertPartner = z.infer<typeof insertPartnerSchema>;
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type InsertApiKey = z.infer<typeof insertApiKeySchema>;
 export type ProofFormat = z.infer<typeof proofFormatEnum>;
 export type DigestAlg = z.infer<typeof digestAlgEnum>;
 export type VerifierProofRef = z.infer<typeof verifierProofRefSchema>;
