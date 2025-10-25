@@ -7,6 +7,9 @@ import { createHash } from "crypto";
 
 const app = express();
 
+// Disable x-powered-by header for security
+app.disable('x-powered-by');
+
 // Trust proxy - Replit runs behind a reverse proxy
 app.set('trust proxy', 1);
 
@@ -29,15 +32,23 @@ app.use(helmet({
   },
 }));
 
-// Rate limiting for API endpoints
+// Rate limiting for API endpoints (DID-based for privacy-first approach)
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: 100, // Limit each client to 100 requests per windowMs
   message: {
-    error: "Too many requests from this IP, please try again later.",
+    error: "Too many requests, please try again later.",
   },
   standardHeaders: true,
   legacyHeaders: false,
+  // Use DID or Client-ID from headers for privacy-first rate limiting
+  // Falls back to IP if neither header present
+  keyGenerator: (req) => {
+    return (req.headers['x-did'] as string) || 
+           (req.headers['x-client-id'] as string) || 
+           req.ip || 
+           'unknown';
+  },
 });
 
 // Apply rate limiting to API routes
@@ -66,12 +77,20 @@ declare module 'http' {
     rawBody: unknown
   }
 }
+
+// Body size caps to prevent DoS attacks
 app.use(express.json({
+  limit: '64kb',  // Cap JSON request bodies at 64KB
+  strict: true,   // Only accept arrays and objects
+  type: ['application/json'],
   verify: (req, _res, buf) => {
     req.rawBody = buf;
   }
 }));
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ 
+  extended: false,
+  limit: '32kb'  // Cap form bodies at 32KB
+}));
 
 // Redact sensitive data from logs (privacy-first logging)
 function redactSensitiveData(obj: any): any {
@@ -163,12 +182,31 @@ app.use((req, res, next) => {
 (async () => {
   const server = await registerRoutes(app);
 
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-
-    res.status(status).json({ message });
-    throw err;
+  // RFC 7807 Problem Details error handler
+  app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+    const status = Number(err.status || err.statusCode || 500);
+    const problemDetails = {
+      type: err.type || 'about:blank',
+      title: err.title || (status >= 500 ? 'Internal Server Error' : 'Request Error'),
+      status,
+      detail: process.env.NODE_ENV === 'production' ? undefined : (err.message || String(err)),
+      instance: req.path,
+    };
+    
+    // Log error for monitoring (with redaction)
+    if (status >= 500) {
+      console.error('[server-error]', {
+        path: req.path,
+        method: req.method,
+        status,
+        error: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+      });
+    }
+    
+    res.status(status)
+      .type('application/problem+json')
+      .json(problemDetails);
   });
 
   // importantly only setup vite in development and after

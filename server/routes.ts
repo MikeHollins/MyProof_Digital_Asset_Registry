@@ -194,35 +194,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Check W3C Status List with fail-closed security model
-      // 
-      // Production behavior:
-      // 1. Fetch status list from statusListUrl
-      // 2. Check bit at statusListIndex in compressed bitstring
-      // 3. If unreachable/stale (beyond max-age threshold), fail closed (reject verification)
-      // 4. Only return "verified" if list confirms status bit is clear (0)
-      //
-      // Current MVP behavior: Respects existing revoked/suspended status (fail-safe)
-      let statusVerdict: string;
+      const { verifyProofStatus } = await import("./status-list-client");
       
-      if (proof.verificationStatus === "revoked" || proof.verificationStatus === "suspended") {
-        // Don't overwrite revoked/suspended status - once revoked, stays revoked until cleared
-        // Production: Would check W3C status list to see if revocation has been cleared
-        statusVerdict = proof.verificationStatus;
-      } else {
-        // MVP: Assume verified if not explicitly revoked/suspended
-        // 
-        // Production implementation would look like:
-        // try {
-        //   const statusList = await fetchStatusList(proof.statusListUrl, { maxStaleness: 3600 });
-        //   const statusBit = checkBitstringIndex(statusList.bitstring, proof.statusListIndex);
-        //   statusVerdict = statusBit === 0 ? "verified" : proof.statusPurpose === "revocation" ? "revoked" : "suspended";
-        // } catch (error) {
-        //   // Fail closed: if status list unreachable or stale, reject verification
-        //   statusVerdict = "unknown";
-        //   return res.status(503).json({ error: "Status list unavailable - failing closed for security" });
-        // }
-        statusVerdict = "verified";
+      let statusVerdict: string;
+      let statusCheckReason: string | undefined;
+      
+      // Always check current status from W3C Status List (fail-closed)
+      const statusCheck = await verifyProofStatus(
+        proof.statusListUrl,
+        proof.statusListIndex,
+        proof.statusPurpose as 'revocation' | 'suspension'
+      );
+      
+      if (statusCheck.verdict === 'unknown') {
+        // Fail closed: status list unreachable or stale
+        return res.status(503).json({
+          error: "Status verification unavailable - failing closed for security",
+          reason: statusCheck.reason,
+          statusListUrl: proof.statusListUrl,
+          failClosed: true,
+        });
       }
+      
+      statusVerdict = statusCheck.verdict === 'valid' ? 'verified' : statusCheck.verdict;
+      statusCheckReason = statusCheck.reason;
 
       // Update verification timestamp (proof is still valid based on receipt)
       const updatedProof = await storage.updateProofAsset(proof.proofAssetId, {

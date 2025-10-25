@@ -1,14 +1,14 @@
-import { SignJWT, jwtVerify, createRemoteJWKSet, importJWK, type JWTPayload } from "jose";
+import { SignJWT, jwtVerify, createRemoteJWKSet, importJWK, type JWTPayload, decodeProtectedHeader } from "jose";
 import { createHash, randomBytes } from "crypto";
+import { setWithTTL, exists as redisExists } from "./redis-client";
 
 // Algorithm allow-list for receipt signing/verification
 const ALLOWED_ALGORITHMS = ["ES256"] as const;
 const REQUIRED_HEADER_TYP = "JWT";
 const CLOCK_SKEW_SECONDS = 60; // ±60 seconds clock tolerance
 
-// In-memory replay cache (for MVP - use Redis in production)
-const replayCache = new Map<string, number>();
-const REPLAY_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+// Replay cache TTL (10 minutes)
+const REPLAY_CACHE_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Receipt Claims Interface
@@ -261,18 +261,20 @@ export async function verifyReceipt(
       };
     }
     
-    // Check jti for replay attacks
+    // Check jti replay cache (10-minute window using Redis with in-memory fallback)
     const jti = String(payload.jti);
-    if (replayCache.has(jti)) {
+    const replayCacheKey = `replay:jti:${jti}`;
+    
+    // Try to set the jti in cache (NX = only if not exists)
+    // If it returns null, the key already exists (replay detected)
+    const setResult = await setWithTTL(replayCacheKey, '1', REPLAY_CACHE_TTL_MS, 'NX');
+    
+    if (setResult !== 'OK') {
       return {
         ok: false,
-        reason: `replay_detected: jti=${jti} already used`,
+        reason: `replay_detected: jti ${jti} already used within ${REPLAY_CACHE_TTL_MS / 1000}s window`,
       };
     }
-    
-    // Add to replay cache with TTL
-    replayCache.set(jti, Date.now() + REPLAY_CACHE_TTL_MS);
-    cleanupReplayCache(); // Periodic cleanup
     
     // Validate nonce if expected
     if (options.expectedNonce && payload.nonce !== options.expectedNonce) {
@@ -312,19 +314,6 @@ export async function verifyReceipt(
   }
 }
 
-/**
- * Clean up expired entries from replay cache
- * Called periodically during verification
- */
-function cleanupReplayCache(): void {
-  const now = Date.now();
-  const entries = Array.from(replayCache.entries());
-  for (const [jti, expiry] of entries) {
-    if (now > expiry) {
-      replayCache.delete(jti);
-    }
-  }
-}
 
 /**
  * Generate a test keypair for receipt signing (development/testing only)

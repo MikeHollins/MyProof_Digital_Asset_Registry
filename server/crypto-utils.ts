@@ -13,7 +13,7 @@ import { createHash } from "crypto";
 export async function canonicalizeJSON(data: any): Promise<string> {
   try {
     // Try dynamic import of json-canonicalize
-    const module = await import('json-canonicalize');
+    const module: any = await import('json-canonicalize');
     const canonicalize = module.default || module;
     if (typeof canonicalize === 'function') {
       return canonicalize(data);
