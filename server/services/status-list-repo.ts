@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
 
-const DEFAULT_BITS = 131072; // 128k entries (16KB bitstring)
+const DEFAULT_BITS = 1048576; // 1M entries (128KB uncompressed, ~5KB compressed)
 
 /**
  * Ensure a status list exists in the database for the given URL and purpose.
