@@ -5,6 +5,21 @@ import { insertProofAssetSchema, updateStatusListSchema } from "@shared/schema";
 import { z } from "zod";
 import { generateProofCommitment, generateCID } from "./crypto-utils";
 import { verifyProof } from "./proof-verification";
+import { generateReceipt, generateTestKeypair } from "./receipt-service";
+
+// Generate signing keypair for receipts (in production, use KMS/HSM)
+let receiptSigningKey: JsonWebKey | null = null;
+let receiptPublicKey: JsonWebKey | null = null;
+
+async function initReceiptKeys() {
+  const { privateKey, publicKey } = await generateTestKeypair();
+  receiptSigningKey = privateKey;
+  receiptPublicKey = publicKey;
+  console.log(`[receipt-service] Receipt signing key initialized (kid: ${(privateKey as any).kid})`);
+}
+
+// Initialize keys on startup
+initReceiptKeys().catch(console.error);
 
 // Status list allocation
 function allocateStatusRef(purpose: string): { statusListUrl: string; statusListIndex: string; statusPurpose: string } {
@@ -175,6 +190,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Generate verification receipt (signed JWS binding proof digest + policy + constraints)
+      let verifierProofRef: string | undefined;
+      if (receiptSigningKey) {
+        try {
+          verifierProofRef = await generateReceipt(receiptSigningKey, {
+            proofDigest: body.proofDigest,
+            policyHash: body.policyHash,
+            constraintHash: body.constraintHash,
+            statusRef: {
+              statusListUrl: statusRef.statusListUrl,
+              statusListIndex: statusRef.statusListIndex,
+              statusPurpose: statusRef.statusPurpose as "revocation" | "suspension",
+            },
+            audience: "myproof-registry",
+            issuer: "did:example:verifier",
+            expiresInSeconds: 31536000, // 1 year
+          });
+        } catch (error) {
+          console.error("[receipt] Failed to generate receipt:", error);
+        }
+      }
+
       // Create proof asset with verification metadata
       const proof = await storage.createProofAsset({
         proofAssetCommitment,
@@ -200,6 +237,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         verificationPublicKeyDigest: verification.publicKeyDigest,
         verificationTimestamp: verification.verifiedAt ? new Date(verification.verifiedAt) : new Date(),
         verificationMetadata: verification.derivedFacts,
+        verifierProofRef,
       });
 
       // Create audit event
@@ -214,7 +252,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         traceId: crypto.randomUUID(),
       });
 
-      res.status(201).json(proof);
+      res.status(201).json({
+        ...proof,
+        _receipt: verifierProofRef, // Include receipt in response for client
+      });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({
