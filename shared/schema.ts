@@ -32,6 +32,7 @@ export const proofAssets = pgTable("proof_assets", {
   verificationPublicKeyDigest: text("verification_public_key_digest"),
   verificationTimestamp: timestamp("verification_timestamp", { withTimezone: true }),
   verificationMetadata: jsonb("verification_metadata"),
+  verifierProofRef: text("verifier_proof_ref"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
@@ -120,6 +121,7 @@ export const insertProofAssetSchema = createInsertSchema(proofAssets, {
   verificationPublicKeyDigest: true,
   verificationTimestamp: true,
   verificationMetadata: true,
+  verifierProofRef: true,
   statusListUrl: true,
   statusListIndex: true,
   statusPurpose: true,
