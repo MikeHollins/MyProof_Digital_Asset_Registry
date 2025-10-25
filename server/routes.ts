@@ -12,10 +12,30 @@ let receiptSigningKey: JsonWebKey | null = null;
 let receiptPublicKey: JsonWebKey | null = null;
 
 async function initReceiptKeys() {
+  // Try to load keypair from environment (for persistence across restarts)
+  const privateKeyEnv = process.env.RECEIPT_SIGNING_KEY;
+  const publicKeyEnv = process.env.RECEIPT_PUBLIC_KEY;
+  
+  if (privateKeyEnv && publicKeyEnv) {
+    try {
+      receiptSigningKey = JSON.parse(privateKeyEnv);
+      receiptPublicKey = JSON.parse(publicKeyEnv);
+      console.log(`[receipt-service] Loaded persisted receipt keys (kid: ${(receiptSigningKey as any).kid})`);
+      return;
+    } catch (error) {
+      console.error("[receipt-service] Failed to parse receipt keys from environment, generating new ones");
+    }
+  }
+  
+  // Generate new keypair if not found in environment
   const { privateKey, publicKey } = await generateTestKeypair();
   receiptSigningKey = privateKey;
   receiptPublicKey = publicKey;
-  console.log(`[receipt-service] Receipt signing key initialized (kid: ${(privateKey as any).kid})`);
+  
+  console.log(`[receipt-service] Generated new receipt signing key (kid: ${(privateKey as any).kid})`);
+  console.log("[receipt-service] ⚠️  IMPORTANT: To persist this key across restarts, set these environment variables:");
+  console.log(`RECEIPT_SIGNING_KEY='${JSON.stringify(privateKey)}'`);
+  console.log(`RECEIPT_PUBLIC_KEY='${JSON.stringify(publicKey)}'`);
 }
 
 // Initialize keys on startup

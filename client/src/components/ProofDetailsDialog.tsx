@@ -145,6 +145,32 @@ export function ProofDetailsDialog({
                     </p>
                   </div>
                 )}
+
+                {proof.verifierProofRef && (
+                  <div>
+                    <Label className="text-xs text-muted-foreground">
+                      Verification Receipt (Signed JWS)
+                    </Label>
+                    <div className="flex items-start gap-2 mt-1">
+                      <code className="flex-1 text-xs font-mono bg-muted px-3 py-2 rounded-md break-all max-h-32 overflow-y-auto">
+                        {proof.verifierProofRef}
+                      </code>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleCopy(proof.verifierProofRef!)}
+                        data-testid="button-copy-receipt"
+                        className="shrink-0"
+                      >
+                        {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      This cryptographic receipt binds the proof digest, policy hash, and constraint hash.
+                      It enables secure re-verification without storing the original proof bytes (privacy-first).
+                    </p>
+                  </div>
+                )}
               </div>
             </section>
 
