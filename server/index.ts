@@ -69,10 +69,9 @@ const apiLimiter = rateLimit({
     const clientId = req.headers['x-client-id'] as string;
     if (clientId) return `client:${clientId}`;
     
-    // Fallback: Use default IP-based key (IPv6-safe)
-    // The library handles IPv6 subnet normalization automatically
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    return `ip:${ip}`;
+    // Fallback: Use library's IPv6-safe IP key generator
+    // This is required to prevent IPv6 subnet bypass attacks
+    return `ip:${ipKeyGenerator(req as any)}`;
   },
 });
 
@@ -171,10 +170,11 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 });
 
 (async () => {
-  // Register demo routes (before main routes for proper ordering)
-  await registerDemoRoutes(app);
-  
+  // Register main routes first (initializes receipt keys)
   const server = await registerRoutes(app);
+  
+  // Register demo routes (requires receipt keys to be initialized)
+  await registerDemoRoutes(app);
 
   // Error handling middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

@@ -11,6 +11,11 @@ import { generateReceipt, generateTestKeypair } from "./receipt-service";
 let receiptSigningKey: JsonWebKey | null = null;
 let receiptPublicKey: JsonWebKey | null = null;
 
+// Export getter for demo routes
+export function getReceiptSigningKey(): JsonWebKey | null {
+  return receiptSigningKey;
+}
+
 async function initReceiptKeys() {
   // Try to load keypair from environment (for persistence across restarts)
   const privateKeyEnv = process.env.RECEIPT_VERIFIER_PRIVATE_JWK;

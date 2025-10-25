@@ -119,7 +119,7 @@ export default function Demo() {
       if (!seedData) throw new Error("No seed data");
       const res = await apiRequest(
         "POST",
-        `/api/proof-assets/${seedData.demo.assetId}/re-verify`,
+        `/api/proof-assets/${seedData.demo.assetId}/verify`,
         { receipt }
       );
       return await res.json() as VerifyResponse;

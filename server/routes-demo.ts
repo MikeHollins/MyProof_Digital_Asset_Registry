@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "crypto";
 import { SignJWT, importJWK } from "jose";
 import { storage } from "./storage";
+import { getReceiptSigningKey } from "./routes";
 
 /**
  * Demo Routes for PAR Registry
@@ -18,13 +19,16 @@ import { storage } from "./storage";
 // Deterministic demo constants (PII-free)
 const DEMO = {
   assetId: "DEMO-ASSET-001",
-  statusListUrl: "https://status.par-registry.example.com/lists/revocation/demo-001",
+  statusListUrl: "http://localhost:5000/api/demo/status-list", // Local mock endpoint
   statusListIndex: "284109",
   statusPurpose: "revocation" as const,
   issuerDid: "did:example:demo-issuer",
   verifierDid: "did:example:demo-verifier",
-  audience: "par-demo-registry",
+  audience: "myproof-registry", // Must match expectedAudience in routes.ts
 };
+
+// In-memory status list state (for demo only)
+let demoStatusRevoked = false;
 
 // Helper: SHA-256 hex digest
 function hexDigest(input: string | Buffer): string {
@@ -40,24 +44,26 @@ function b64uDigest(input: string | Buffer): string {
 
 /**
  * Get signing key for demo receipt generation
- * Only works in development mode - production should use separate verifier service
+ * Uses the same receipt signing key that was initialized in routes.ts
  */
-async function getDemoSigningKey(): Promise<any> {
+function getDemoSigningKey(): JsonWebKey {
   if (process.env.NODE_ENV === 'production') {
     throw new Error("[demo] Receipt signing disabled in production. Use separate verifier service.");
   }
   
-  // Load from environment or use the existing receipt service key
+  // Try environment variable first
   if (process.env.RECEIPT_VERIFIER_PRIVATE_JWK) {
     return JSON.parse(process.env.RECEIPT_VERIFIER_PRIVATE_JWK);
   }
   
-  // Generate ephemeral key for demo (will be different each restart)
-  const { generateKeyPair, exportJWK } = await import("jose");
-  const { privateKey } = await generateKeyPair('ES256');
-  const jwk = await exportJWK(privateKey);
-  (jwk as any).kid = (jwk as any).kid || randomBytes(8).toString('hex');
-  return jwk;
+  // Use the ephemeral key generated at startup
+  const key = getReceiptSigningKey();
+  
+  if (!key) {
+    throw new Error("[demo] Receipt signing key not initialized. Server may still be starting up.");
+  }
+  
+  return key;
 }
 
 export async function registerDemoRoutes(app: Express) {
@@ -90,7 +96,6 @@ export async function registerDemoRoutes(app: Express) {
       // 2) Simulate proof digest (normally hash of actual proof bytes)
       const proofPayload = "DEMO-PROOF-PAYLOAD-NO-PII";
       const proofDigestHex = hexDigest(proofPayload);
-      const proofDigestB64u = b64uDigest(proofPayload);
 
       // 3) Generate commitment (deterministic identifier)
       const commitmentData = {
@@ -102,49 +107,55 @@ export async function registerDemoRoutes(app: Express) {
       const commitment = hexDigest(JSON.stringify(commitmentData));
 
       // 4) Create or update proof asset (idempotent)
+      // Note: Don't try to use custom IDs - let DB generate UUID
       let proofAsset;
       try {
-        proofAsset = await storage.getProofAsset(DEMO.assetId);
-        // Already exists - return existing
-      } catch (error) {
-        // Doesn't exist - create new
-        proofAsset = await storage.createProofAsset({
-          proofAssetId: DEMO.assetId,
-          proofAssetCommitment: commitment,
-          issuerDid: DEMO.issuerDid,
-          proofFormat: "JWS",
-          proofDigest: proofDigestHex,
-          digestAlg: "sha2-256",
-          constraintHash,
-          policyHash,
-          policyCid: "bafybeigdemo", // Demo CID
-          statusListUrl: DEMO.statusListUrl,
-          statusListIndex: DEMO.statusListIndex,
-          statusPurpose: DEMO.statusPurpose,
-          verificationStatus: "verified",
-          verificationTimestamp: new Date(),
-        });
+        // Try to find existing demo asset by commitment
+        const existing = await storage.getProofAssets();
+        proofAsset = existing.find(p => p.proofAssetCommitment === commitment);
+        
+        if (!proofAsset) {
+          // Doesn't exist - create new
+          proofAsset = await storage.createProofAsset({
+            proofAssetCommitment: commitment,
+            issuerDid: DEMO.issuerDid,
+            proofFormat: "JWS",
+            proofDigest: proofDigestHex,
+            digestAlg: "sha2-256",
+            constraintHash,
+            policyHash,
+            policyCid: "bafybeigdemo", // Demo CID
+            statusListUrl: DEMO.statusListUrl,
+            statusListIndex: DEMO.statusListIndex,
+            statusPurpose: DEMO.statusPurpose,
+            verificationStatus: "verified",
+            verificationTimestamp: new Date(),
+          });
 
-        // Create audit event
-        await storage.createAuditEvent({
-          eventType: "ASSET_CREATED",
-          assetId: DEMO.assetId,
-          payload: {
-            source: "demo_seed",
-            issuer_did: DEMO.issuerDid,
-            commitment,
-          },
-          traceId: randomBytes(16).toString('hex'),
-        });
+          // Create audit event
+          await storage.createAuditEvent({
+            eventType: "ASSET_CREATED",
+            assetId: proofAsset.proofAssetId,
+            payload: {
+              source: "demo_seed",
+              issuer_did: DEMO.issuerDid,
+              commitment,
+            },
+            traceId: randomBytes(16).toString('hex'),
+          });
+        }
+      } catch (error) {
+        console.error('[demo/seed] Error checking/creating asset:', error);
+        throw error;
       }
 
       // 5) Generate signed receipt (dev-only)
-      const jwk = await getDemoSigningKey();
+      const jwk = getDemoSigningKey();
       const privateKey = await importJWK(jwk, 'ES256');
 
       const now = Math.floor(Date.now() / 1000);
       const receiptPayload = {
-        proof_digest: proofDigestB64u,
+        proof_digest: proofDigestHex, // Must match database encoding (hex)
         policy_hash: policyHash,
         constraint_hash: constraintHash,
         status_ref: {
@@ -155,7 +166,7 @@ export async function registerDemoRoutes(app: Express) {
         aud: DEMO.audience,
         nbf: now - 30,
         exp: now + (7 * 24 * 3600), // 7 days
-        jti: `demo-jti-${randomBytes(16).toString('hex')}`,
+        jti: `demo-jti-${Date.now()}-${randomBytes(8).toString('hex')}`, // Timestamp + random for uniqueness
         iat: now,
         iss: DEMO.verifierDid,
       };
@@ -168,10 +179,15 @@ export async function registerDemoRoutes(app: Express) {
         })
         .sign(privateKey);
 
-      // 6) Generate cURL snippets for demo
+      // 6) Store the receipt in the proof asset (critical for receipt-based verification)
+      await storage.updateProofAsset(proofAsset.proofAssetId, {
+        verifierProofRef: receipt,
+      });
+
+      // 7) Generate cURL snippets for demo
       const baseUrl = process.env.BASE_URL || "http://localhost:5000";
       
-      const curlVerify = `curl -s -X POST ${baseUrl}/api/proof-assets/${DEMO.assetId}/re-verify \\
+      const curlVerify = `curl -s -X POST ${baseUrl}/api/proof-assets/${proofAsset.proofAssetId}/verify \\
   -H 'Content-Type: application/json' \\
   -d '{"receipt":"${receipt}"}'`;
 
@@ -179,11 +195,11 @@ export async function registerDemoRoutes(app: Express) {
   -H 'Content-Type: application/json' \\
   -d '{}'`;
 
-      // 7) Return demo seed data
+      // 8) Return demo seed data
       return res.json({
         ok: true,
         demo: {
-          assetId: DEMO.assetId,
+          assetId: proofAsset.proofAssetId, // Use DB-generated ID
           issuerDid: DEMO.issuerDid,
           verifierDid: DEMO.verifierDid,
           commitment,
@@ -197,7 +213,6 @@ export async function registerDemoRoutes(app: Express) {
           policy_hash: policyHash,
           constraint_hash: constraintHash,
           proof_digest_hex: proofDigestHex,
-          proof_digest_b64u: proofDigestB64u,
         },
         receipt,
         curls: {
@@ -229,25 +244,42 @@ export async function registerDemoRoutes(app: Express) {
    */
   app.post("/api/demo/revoke", async (_req: Request, res: Response) => {
     try {
-      // Get demo asset
-      const proof = await storage.getProofAsset(DEMO.assetId);
+      // Generate deterministic commitment to find demo asset
+      const policyDoc = { version: "1.0.0", name: "Demo Policy", rules: ["no_pii", "status_check", "hash_only"] };
+      const constraintDoc = { version: "1.0.0", name: "Demo Constraint", rules: ["proof_digest_required", "issuer_did_required"] };
+      const policyHash = hexDigest(JSON.stringify(policyDoc));
+      const constraintHash = hexDigest(JSON.stringify(constraintDoc));
+      const commitmentData = {
+        policy_hash: policyHash,
+        constraint_hash: constraintHash,
+        proof_id: DEMO.assetId,
+        issuer_did: DEMO.issuerDid,
+      };
+      const commitment = hexDigest(JSON.stringify(commitmentData));
+      
+      // Find demo asset by commitment
+      const existing = await storage.getProofAssets();
+      const proof = existing.find(p => p.proofAssetCommitment === commitment);
       
       if (!proof) {
         return res.status(404).json({
           ok: false,
-          error: `Demo asset ${DEMO.assetId} not found. Run /api/demo/seed first.`
+          error: `Demo asset not found. Run /api/demo/seed first.`
         });
       }
 
       // Update status to revoked
-      const updated = await storage.updateProofAsset(DEMO.assetId, {
+      const updated = await storage.updateProofAsset(proof.proofAssetId, {
         verificationStatus: "revoked",
       });
+
+      // Flip demo status bit
+      demoStatusRevoked = true;
 
       // Create audit event
       await storage.createAuditEvent({
         eventType: "STATUS_UPDATE",
-        assetId: DEMO.assetId,
+        assetId: proof.proofAssetId,
         payload: {
           source: "demo_revoke",
           old_status: proof?.verificationStatus || "unknown",
@@ -260,7 +292,7 @@ export async function registerDemoRoutes(app: Express) {
 
       return res.json({
         ok: true,
-        assetId: DEMO.assetId,
+        assetId: proof.proofAssetId,
         statusListUrl: DEMO.statusListUrl,
         statusListIndex: DEMO.statusListIndex,
         operations: [{ op: 'set', index: DEMO.statusListIndex }],
@@ -285,27 +317,43 @@ export async function registerDemoRoutes(app: Express) {
    */
   app.post("/api/demo/reset", async (_req: Request, res: Response) => {
     try {
-      // Check if demo asset exists
-      let proof;
-      try {
-        proof = await storage.getProofAsset(DEMO.assetId);
-      } catch (error) {
+      // Generate deterministic commitment to find demo asset
+      const policyDoc = { version: "1.0.0", name: "Demo Policy", rules: ["no_pii", "status_check", "hash_only"] };
+      const constraintDoc = { version: "1.0.0", name: "Demo Constraint", rules: ["proof_digest_required", "issuer_did_required"] };
+      const policyHash = hexDigest(JSON.stringify(policyDoc));
+      const constraintHash = hexDigest(JSON.stringify(constraintDoc));
+      const commitmentData = {
+        policy_hash: policyHash,
+        constraint_hash: constraintHash,
+        proof_id: DEMO.assetId,
+        issuer_did: DEMO.issuerDid,
+      };
+      const commitment = hexDigest(JSON.stringify(commitmentData));
+      
+      // Find demo asset by commitment
+      const existing = await storage.getProofAssets();
+      const proof = existing.find(p => p.proofAssetCommitment === commitment);
+      
+      if (!proof) {
         return res.status(404).json({
           ok: false,
-          error: `Demo asset ${DEMO.assetId} not found. Run /api/demo/seed first.`
+          error: `Demo asset not found. Run /api/demo/seed first.`
         });
       }
 
       // Reset status to verified
-      await storage.updateProofAsset(DEMO.assetId, {
+      await storage.updateProofAsset(proof.proofAssetId, {
         verificationStatus: "verified",
         verificationTimestamp: new Date(),
       });
 
+      // Clear demo status bit
+      demoStatusRevoked = false;
+
       // Create audit event
       await storage.createAuditEvent({
         eventType: "STATUS_UPDATE",
-        assetId: DEMO.assetId,
+        assetId: proof.proofAssetId,
         payload: {
           source: "demo_reset",
           old_status: proof?.verificationStatus || "unknown",
@@ -316,13 +364,65 @@ export async function registerDemoRoutes(app: Express) {
 
       return res.json({
         ok: true,
-        assetId: DEMO.assetId,
+        assetId: proof.proofAssetId,
         newStatus: "verified",
         note: "Demo asset reset to verified status. You can now run the verification flow again.",
       });
 
     } catch (error: any) {
       console.error('[demo/reset] Error:', error);
+      return res.status(500).json({ 
+        ok: false, 
+        error: error.message 
+      });
+    }
+  });
+
+  /**
+   * GET /api/demo/status-list
+   * 
+   * Mock W3C Bitstring Status List endpoint for demo.
+   * Returns a compressed bitstring where index 284109 can be revoked/unrevoked.
+   */
+  app.get("/api/demo/status-list", async (_req: Request, res: Response) => {
+    try {
+      // Create a bitstring with 131072 bits (16KB compressed)
+      const bitstringLength = 131072;
+      const byteLength = Math.ceil(bitstringLength / 8);
+      const bitstring = Buffer.alloc(byteLength, 0);
+
+      // Set bit 284109 if demo is revoked
+      if (demoStatusRevoked) {
+        const index = parseInt(DEMO.statusListIndex, 10);
+        const byteIndex = Math.floor(index / 8);
+        const bitIndex = index % 8;
+        bitstring[byteIndex] |= (1 << bitIndex);
+      }
+
+      // Compress using gzip
+      const zlib = await import('zlib');
+      const compressed = await new Promise<Buffer>((resolve, reject) => {
+        zlib.gzip(bitstring, (err, result) => {
+          if (err) reject(err);
+          else resolve(result);
+        });
+      });
+
+      // Return W3C Bitstring Status List format
+      return res.json({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        id: DEMO.statusListUrl,
+        type: "BitstringStatusListCredential",
+        credentialSubject: {
+          id: `${DEMO.statusListUrl}#list`,
+          type: "BitstringStatusList",
+          encodedList: compressed.toString('base64'),
+          statusPurpose: DEMO.statusPurpose,
+        },
+      });
+
+    } catch (error: any) {
+      console.error('[demo/status-list] Error:', error);
       return res.status(500).json({ 
         ok: false, 
         error: error.message 
