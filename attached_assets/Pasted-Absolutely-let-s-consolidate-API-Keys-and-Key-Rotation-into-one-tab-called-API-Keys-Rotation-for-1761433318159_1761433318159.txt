@@ -1,0 +1,549 @@
+Absolutely—let’s consolidate API Keys and Key Rotation into one tab called “API Keys / Rotation” for the MyProof Registry (PAR), fully wired end-to-end (backend + frontend), production-safe (Argon2id, pepper, one-time token display), and restart-resilient (Postgres-backed).
+
+Below is a copy-and-paste implementation pack your Replit agent can follow. It creates all required files, wires routes, and adds the UI tab with issue/rotate/revoke/list views and partner filtering—no placeholders, no mocks.
+
+🔧 Agent Instructions (do these steps)
+
+Install deps
+
+pnpm add argon2 zod uuid
+pnpm add drizzle-orm pg
+
+
+Create / update files exactly as shown below.
+
+1) Backend — DB schema for partners + API keys
+
+backend/shared/schema.apikeys.ts
+
+import { pgTable, text, timestamp, varchar, integer, uuid, boolean } from "drizzle-orm/pg-core";
+
+export const partners = pgTable("partners", {
+  partnerId: uuid("partner_id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  contactEmail: text("contact_email"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone:true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone:true }).notNull().defaultNow(),
+});
+
+export const apiKeys = pgTable("api_keys", {
+  keyId: varchar("key_id", { length: 64 }).primaryKey(),
+  partnerId: uuid("partner_id").notNull(),
+  secretHash: text("secret_hash").notNull(),
+  scopes: text("scopes").notNull(),                    // CSV: assets:mint,status:update,…
+  status: varchar("status", { length: 16 }).notNull().default("active"), // active|revoked
+  notBefore: timestamp("not_before", { withTimezone:true }).notNull().defaultNow(),
+  notAfter: timestamp("not_after", { withTimezone:true }),
+  ratePerMinute: integer("rate_per_minute").notNull().default(300),
+  createdAt: timestamp("created_at", { withTimezone:true }).notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone:true }),
+});
+
+
+If you prefer raw SQL, run the equivalent CREATE TABLE statements you saw earlier.
+
+2) Backend — crypto helpers (peppered Argon2id)
+
+backend/src/utils/crypto.ts
+
+import crypto from "node:crypto";
+import argon2 from "argon2";
+
+const PEPPER = process.env.APIKEY_PEPPER || "";
+if (!PEPPER && process.env.NODE_ENV === "production") {
+  throw new Error("APIKEY_PEPPER is required in production");
+}
+
+export function randomBytesHex(n=32) {
+  return crypto.randomBytes(n).toString("hex");
+}
+export function shortId(len=10) {
+  return crypto.randomBytes(Math.ceil(len/2)).toString("hex").slice(0,len);
+}
+export function deriveSecretForHash(secret: string): Buffer {
+  return crypto.createHmac("sha256", PEPPER).update(secret, "utf8").digest();
+}
+export async function hashSecret(pepped: Buffer): Promise<string> {
+  return argon2.hash(pepped, {
+    type: argon2.argon2id,
+    memoryCost: 19456, timeCost: 2, parallelism: 1
+  });
+}
+export async function verifySecret(hash: string, pepped: Buffer): Promise<boolean> {
+  try { return await argon2.verify(hash, pepped); } catch { return false; }
+}
+
+3) Backend — API key service (issue, rotate, revoke, validate)
+
+backend/src/services/apiKeys.ts
+
+import { db } from "../shared/db";
+import { apiKeys, partners } from "../../shared/schema.apikeys";
+import { eq, ilike } from "drizzle-orm";
+import { randomBytesHex, shortId, deriveSecretForHash, hashSecret, verifySecret } from "../utils/crypto";
+
+const ID_PREFIX = process.env.APIKEY_ID_PREFIX || "mpk_";
+const SECRET_BYTES = Number(process.env.APIKEY_SECRET_BYTES || 32);
+
+export type Scope =
+  | 'assets:mint' | 'assets:read' | 'status:update'
+  | 'transfer:execute' | 'audit:read' | 'admin:*';
+
+export async function issueApiKey(partnerId: string, scopes: Scope[], notAfter?: Date, ratePerMinute=300) {
+  const secret = randomBytesHex(SECRET_BYTES);
+  const keyId = `${ID_PREFIX}${shortId(12)}`;
+  const hashed = await hashSecret(deriveSecretForHash(secret));
+
+  await db.insert(apiKeys).values({
+    keyId, partnerId, secretHash: hashed,
+    scopes: scopes.join(","), status: "active",
+    notAfter, ratePerMinute
+  });
+
+  const token = `${keyId}.${secret}`; // show ONCE
+  return { token, keyId, partnerId, scopes, notAfter, ratePerMinute };
+}
+
+export async function revokeApiKey(keyId: string) {
+  await db.update(apiKeys).set({ status: "revoked" }).where(eq(apiKeys.keyId, keyId));
+}
+
+export async function rotateApiKey(keyId: string) {
+  const rows = await db.select().from(apiKeys).where(eq(apiKeys.keyId, keyId));
+  if (!rows.length) throw new Error("key_not_found");
+  const old = rows[0];
+  await revokeApiKey(keyId);
+  return issueApiKey(old.partnerId, old.scopes.split(",") as Scope[], old.notAfter || undefined, old.ratePerMinute);
+}
+
+export async function findKey(keyId: string) {
+  const rows = await db.select().from(apiKeys).where(eq(apiKeys.keyId, keyId));
+  return rows[0] || null;
+}
+
+export async function listApiKeys(q?: { partnerId?: string; text?: string }) {
+  let sql = `SELECT k.*, p.name as partner_name FROM api_keys k JOIN partners p ON p.partner_id = k.partner_id`;
+  const args: any[] = [];
+  const cond: string[] = [];
+  if (q?.partnerId) { args.push(q.partnerId); cond.push(`k.partner_id = $${args.length}`); }
+  if (q?.text) { args.push(`%${q.text}%`); cond.push(`(k.key_id ILIKE $${args.length} OR p.name ILIKE $${args.length})`); }
+  if (cond.length) sql += ` WHERE ` + cond.join(' AND ');
+  sql += ` ORDER BY k.created_at DESC LIMIT 200`;
+  const res = await db.execute(sql, args);
+  // @ts-ignore
+  return res.rows || [];
+}
+
+export async function listPartners(text?: string) {
+  if (!text) {
+    const res = await db.execute(`SELECT * FROM partners WHERE active = true ORDER BY created_at DESC LIMIT 200`);
+    // @ts-ignore
+    return res.rows;
+  }
+  const res = await db.execute(`SELECT * FROM partners WHERE active = true AND name ILIKE $1 ORDER BY created_at DESC LIMIT 200`, [`%${text}%`]);
+  // @ts-ignore
+  return res.rows;
+}
+
+export async function validateApiKeyHeader(headerValue?: string) {
+  if (!headerValue) return { ok:false, reason:'missing_header' };
+  let token = headerValue.trim();
+  if (/^ApiKey\s+/i.test(token)) token = token.replace(/^ApiKey\s+/i, "");
+  const [keyId, secret] = token.split(".");
+  if (!keyId || !secret) return { ok:false, reason:'bad_format' };
+
+  const key = await findKey(keyId);
+  if (!key) return { ok:false, reason:'unknown_key' };
+  if (key.status !== "active") return { ok:false, reason:'key_inactive' };
+
+  const now = new Date();
+  if (key.notAfter && now > key.notAfter) return { ok:false, reason:'expired' };
+
+  const pepped = deriveSecretForHash(secret);
+  const match = await verifySecret(key.secretHash, pepped);
+  if (!match) return { ok:false, reason:'secret_mismatch' };
+
+  await db.execute(`UPDATE api_keys SET last_used_at=now() WHERE key_id=$1`, [keyId]);
+
+  const scopes = key.scopes.split(",");
+  return { ok:true, partnerId: key.partnerId, keyId, scopes };
+}
+
+4) Backend — middleware + route guard
+
+backend/src/middleware/apiKey.ts
+
+import type { Request, Response, NextFunction } from "express";
+import { validateApiKeyHeader } from "../services/apiKeys";
+
+declare global {
+  namespace Express {
+    interface Request {
+      auth?: { partnerId: string; keyId: string; scopes: string[] }
+    }
+  }
+}
+
+const REDACT_KEYS = ['authorization','x-api-key','x-partner-key','api-key','apikey','token','secret'];
+
+export async function apiKeyAuth(req: Request, res: Response, next: NextFunction) {
+  try {
+    const header = (req.headers['x-api-key'] as string) || (req.headers['authorization'] as string);
+    const result = await validateApiKeyHeader(header);
+    if (!result.ok) return res.status(401).json({ error:'unauthorized', reason: result.reason });
+
+    req.auth = { partnerId: result.partnerId!, keyId: result.keyId!, scopes: result.scopes! };
+    for (const k of Object.keys(req.headers)) {
+      if (REDACT_KEYS.includes(k.toLowerCase())) req.headers[k] = '<redacted>' as any;
+    }
+    return next();
+  } catch (e:any) {
+    return res.status(500).json({ error:'auth_error', detail: e.message });
+  }
+}
+
+export function requireScopes(required: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const have = req.auth?.scopes || [];
+    const ok = required.every(s => have.includes(s) || have.includes('admin:*'));
+    if (!ok) return res.status(403).json({ error:'forbidden', required });
+    return next();
+  };
+}
+
+5) Backend — Admin routes (list/issue/rotate/revoke + partners)
+
+backend/src/routes/adminApiKeys.ts
+
+import type { Express, Request, Response } from "express";
+import { z } from "zod";
+import { db } from "../shared/db";
+import { partners } from "../../shared/schema.apikeys";
+import { issueApiKey, revokeApiKey, rotateApiKey, listApiKeys, listPartners } from "../services/apiKeys";
+import { requireScopes, apiKeyAuth } from "../middleware/apiKey";
+import { eq } from "drizzle-orm";
+
+const PartnerCreate = z.object({
+  name: z.string().min(2),
+  contactEmail: z.string().email().optional()
+});
+const IssueKey = z.object({
+  partnerId: z.string().uuid(),
+  scopes: z.array(z.string()).nonempty(),
+  notAfter: z.string().datetime().optional(),
+  ratePerMinute: z.number().int().min(1).max(10000).optional()
+});
+
+export function registerAdminApiKeys(app: Express) {
+  // List partners
+  app.get('/api/admin/partners', apiKeyAuth, requireScopes(['admin:*']), async (req, res) => {
+    const list = await listPartners(String(req.query.q||'') || undefined);
+    return res.json({ ok:true, partners: list });
+  });
+
+  // Create partner
+  app.post('/api/admin/partners', apiKeyAuth, requireScopes(['admin:*']), async (req, res) => {
+    const body = PartnerCreate.parse(req.body);
+    const result = await db.insert(partners).values({ name: body.name, contactEmail: body.contactEmail || null }).returning();
+    return res.json({ ok:true, partner: result[0] });
+  });
+
+  // List API keys (filter by partnerId or q=text)
+  app.get('/api/admin/api-keys', apiKeyAuth, requireScopes(['admin:*']), async (req, res) => {
+    const rows = await listApiKeys({
+      partnerId: (req.query.partnerId as string) || undefined,
+      text: (req.query.q as string) || undefined
+    });
+    return res.json({ ok:true, keys: rows });
+  });
+
+  // Issue a key
+  app.post('/api/admin/api-keys/issue', apiKeyAuth, requireScopes(['admin:*']), async (req, res) => {
+    const body = IssueKey.parse(req.body);
+    const notAfter = body.notAfter ? new Date(body.notAfter) : undefined;
+    const { token, keyId, ratePerMinute } = await issueApiKey(body.partnerId, body.scopes as any, notAfter, body.ratePerMinute || 300);
+    return res.json({ ok:true, keyId, token, ratePerMinute }); // token shown ONCE
+  });
+
+  // Rotate a key
+  app.post('/api/admin/api-keys/:keyId/rotate', apiKeyAuth, requireScopes(['admin:*']), async (req, res) => {
+    const { token, keyId } = await rotateApiKey(req.params.keyId);
+    return res.json({ ok:true, keyId, token });
+  });
+
+  // Revoke a key
+  app.post('/api/admin/api-keys/:keyId/revoke', apiKeyAuth, requireScopes(['admin:*']), async (req, res) => {
+    await revokeApiKey(req.params.keyId);
+    return res.json({ ok:true });
+  });
+}
+
+
+Wire routes and middleware in your server entry (if not global already):
+
+// backend/src/server.ts (or server/index.ts)
+import { apiKeyAuth, requireScopes } from "./middleware/apiKey";
+import { registerAdminApiKeys } from "./routes/adminApiKeys";
+
+// ... existing app setup ...
+registerAdminApiKeys(app);
+// Keep apiKeyAuth+requireScopes on protected business routes too:
+// app.post("/api/proof-assets", apiKeyAuth, requireScopes(["assets:mint"]), handler)
+
+
+.env (dev)
+
+APIKEY_PEPPER=change-this-pepper-now
+APIKEY_ID_PREFIX=mpk_
+APIKEY_SECRET_BYTES=32
+
+6) Frontend — New “API Keys / Rotation” page
+
+Add route in your app router (match your project’s style—Wouter or similar):
+
+// client/src/App.tsx (or wherever routes are declared)
+import ApiKeysPage from "@/pages/ApiKeys";
+
+<Switch>
+  {/* existing routes */}
+  <Route path="/api-keys" component={ApiKeysPage} />
+  {/* ... */}
+</Switch>
+
+
+client/src/pages/ApiKeys.tsx — combined List + Issue + Rotate + Revoke
+
+import React, { useEffect, useMemo, useState } from "react";
+
+// Minimal fetch helper (dev): admin token stored in localStorage for demo
+function authHeader() {
+  const t = localStorage.getItem("ADMIN_API_TOKEN") || ""; // format: "ApiKey <keyId>.<secret>"
+  return t ? { Authorization: t } : {};
+}
+
+async function fetchJSON(url: string, init?: RequestInit) {
+  const res = await fetch(url, { ...init, headers: { 'Content-Type':'application/json', ...authHeader(), ...(init?.headers||{}) }});
+  const data = await res.json().catch(()=> ({}));
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
+
+const SCOPES: {value:string; label:string}[] = [
+  { value:'assets:mint', label:'assets:mint' },
+  { value:'assets:read', label:'assets:read' },
+  { value:'status:update', label:'status:update' },
+  { value:'transfer:execute', label:'transfer:execute' },
+  { value:'audit:read', label:'audit:read' },
+  { value:'admin:*', label:'admin:* (all)' },
+];
+
+export default function ApiKeysPage() {
+  const [loading, setLoading] = useState(false);
+  const [partners, setPartners] = useState<any[]>([]);
+  const [keys, setKeys] = useState<any[]>([]);
+  const [partnerFilter, setPartnerFilter] = useState<string>("");
+  const [q, setQ] = useState<string>("");
+  const [issueOpen, setIssueOpen] = useState(false);
+  const [issuePartnerId, setIssuePartnerId] = useState<string>("");
+  const [issueScopes, setIssueScopes] = useState<string[]>(['assets:read']);
+  const [issueRPM, setIssueRPM] = useState<number>(300);
+  const [issueNotAfter, setIssueNotAfter] = useState<string>("");
+  const [issuedToken, setIssuedToken] = useState<string>("");
+
+  async function loadPartners() {
+    const data = await fetchJSON(`/api/admin/partners`);
+    setPartners(data.partners || []);
+  }
+  async function loadKeys() {
+    const u = new URL(`/api/admin/api-keys`, window.location.origin);
+    if (partnerFilter) u.searchParams.set('partnerId', partnerFilter);
+    if (q) u.searchParams.set('q', q);
+    const data = await fetchJSON(u.toString());
+    setKeys(data.keys || []);
+  }
+
+  useEffect(() => { setLoading(true); Promise.all([loadPartners(), loadKeys()]).finally(()=> setLoading(false)); }, []);
+  useEffect(() => { loadKeys(); }, [partnerFilter, q]);
+
+  function toggleScope(s: string) {
+    setIssueScopes(prev => prev.includes(s) ? prev.filter(x=>x!==s) : [...prev, s]);
+  }
+
+  async function issueKey() {
+    if (!issuePartnerId || issueScopes.length === 0) { alert("Partner and at least one scope required"); return; }
+    const body = { partnerId: issuePartnerId, scopes: issueScopes, ratePerMinute: issueRPM || 300 };
+    if (issueNotAfter) body['notAfter'] = new Date(issueNotAfter).toISOString();
+    const data = await fetchJSON(`/api/admin/api-keys/issue`, { method:'POST', body: JSON.stringify(body) });
+    setIssuedToken(data.token); // show ONCE
+    setIssueOpen(false);
+    await loadKeys();
+  }
+
+  async function rotate(keyId: string) {
+    if (!confirm(`Rotate key ${keyId}? Old key will be revoked.`)) return;
+    const data = await fetchJSON(`/api/admin/api-keys/${keyId}/rotate`, { method:'POST' });
+    alert(`New token (copy now, shown once):\n\n${data.token}`);
+    await loadKeys();
+  }
+  async function revoke(keyId: string) {
+    if (!confirm(`Revoke key ${keyId}?`)) return;
+    await fetchJSON(`/api/admin/api-keys/${keyId}/revoke`, { method:'POST' });
+    await loadKeys();
+  }
+
+  return (
+    <main className="p-6 space-y-6">
+      <h1 className="text-2xl font-bold">API Keys / Rotation</h1>
+
+      {/* Security notes */}
+      <section className="p-4 border rounded bg-gray-50">
+        <h2 className="font-semibold mb-2">Security Notes</h2>
+        <ul className="list-disc pl-6 text-sm space-y-1">
+          <li>Secrets are shown <strong>once</strong> on creation or rotation; store securely.</li>
+          <li>Secrets are stored peppered + <strong>Argon2id</strong> hashed; plaintext never saved.</li>
+          <li>Use separate keys per environment (dev/test/prod); rotate regularly; revoke on exposure.</li>
+          <li>Grant least privilege via scopes; prefer <code>assets:read</code> / <code>reverify</code> for consume-only partners.</li>
+        </ul>
+      </section>
+
+      {/* Filters + Actions */}
+      <section className="flex items-center gap-2">
+        <select value={partnerFilter} onChange={e=>setPartnerFilter(e.target.value)} className="border p-2 rounded">
+          <option value="">All partners</option>
+          {partners.map((p:any)=> <option key={p.partner_id} value={p.partner_id}>{p.name}</option>)}
+        </select>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search keyId or partner name" className="border p-2 rounded flex-1"/>
+        <button onClick={()=>setIssueOpen(true)} className="bg-black text-white px-4 py-2 rounded">Generate New Key</button>
+      </section>
+
+      {/* Keys table */}
+      <section className="overflow-x-auto">
+        <table className="w-full text-sm border">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="text-left p-2">Key ID</th>
+              <th className="text-left p-2">Partner</th>
+              <th className="text-left p-2">Scopes</th>
+              <th className="text-left p-2">Status</th>
+              <th className="text-left p-2">Last Used</th>
+              <th className="text-left p-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {keys.map((k:any)=> (
+              <tr key={k.key_id} className="border-t">
+                <td className="p-2 font-mono">{k.key_id}</td>
+                <td className="p-2">{k.partner_name}</td>
+                <td className="p-2">
+                  <div className="flex gap-1 flex-wrap">
+                    {String(k.scopes).split(',').map((s:string)=> (
+                      <span key={s} className="px-2 py-0.5 rounded bg-gray-200 text-gray-800">{s}</span>
+                    ))}
+                  </div>
+                </td>
+                <td className="p-2">{k.status}</td>
+                <td className="p-2">{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : '—'}</td>
+                <td className="p-2 flex gap-2">
+                  <button onClick={()=>rotate(k.key_id)} className="px-3 py-1 rounded bg-blue-600 text-white">Rotate</button>
+                  <button onClick={()=>revoke(k.key_id)} className="px-3 py-1 rounded bg-red-600 text-white">Revoke</button>
+                </td>
+              </tr>
+            ))}
+            {keys.length === 0 && (
+              <tr><td className="p-4 text-gray-500" colSpan={6}>No API keys yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+
+      {/* Issue dialog (simple inline) */}
+      {issueOpen && (
+        <section className="p-4 border rounded bg-white">
+          <h3 className="font-semibold mb-2">Generate New Key</h3>
+          <div className="flex flex-col gap-2">
+            <label className="text-sm">Partner</label>
+            <select value={issuePartnerId} onChange={e=>setIssuePartnerId(e.target.value)} className="border p-2 rounded">
+              <option value="">Select partner…</option>
+              {partners.map((p:any)=> <option key={p.partner_id} value={p.partner_id}>{p.name}</option>)}
+            </select>
+
+            <label className="text-sm mt-2">Scopes</label>
+            <div className="flex gap-3 flex-wrap">
+              {SCOPES.map(s => (
+                <label key={s.value} className="flex items-center gap-1">
+                  <input type="checkbox" checked={issueScopes.includes(s.value)} onChange={()=>toggleScope(s.value)} />
+                  <span>{s.label}</span>
+                </label>
+              ))}
+            </div>
+
+            <div className="flex gap-2">
+              <div>
+                <label className="text-sm">Rate / min</label>
+                <input type="number" value={issueRPM} onChange={e=>setIssueRPM(Number(e.target.value||'300'))} className="border p-2 rounded w-28" />
+              </div>
+              <div>
+                <label className="text-sm">Not After (optional)</label>
+                <input type="datetime-local" value={issueNotAfter} onChange={e=>setIssueNotAfter(e.target.value)} className="border p-2 rounded" />
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-2">
+              <button onClick={issueKey} className="bg-black text-white px-4 py-2 rounded">Create Key</button>
+              <button onClick={()=>setIssueOpen(false)} className="px-4 py-2 rounded border">Cancel</button>
+            </div>
+
+            {issuedToken && (
+              <div className="mt-3 p-2 bg-yellow-50 border border-yellow-300">
+                <div className="font-semibold">New Token (copy now, shown once):</div>
+                <pre className="overflow-x-auto">{issuedToken}</pre>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+    </main>
+  );
+}
+
+
+Dev auth: set an admin token in localStorage (e.g., “ApiKey mpk_admin.<secret>”) so the UI can call admin endpoints during development. In production, use your proper operator login flow.
+
+7) Secure defaults & scope mapping
+
+Least privilege: give partners only what they need (assets:mint, assets:read, or consume-only with assets:read + reverify).
+
+Status control: keep status:update centralized unless explicitly delegated.
+
+Operator mint: admin:* for MyProof operator; partner can be consume-only.
+
+Rotation: rotate keys regularly; revoke on suspicion; secrets are never stored plaintext.
+
+Logging: redact Authorization, X-API-Key, secrets, and Argon2 hashes.
+
+8) Quick smoke (dev)
+
+Create a partner (POST /api/admin/partners) with an admin token.
+
+Issue a key (POST /api/admin/api-keys/issue) → token shown once.
+
+Load /api-keys page → should list keys with partner names.
+
+Rotate → new token shown; old key revoked.
+
+Revoke → key status becomes revoked.
+
+Use X-API-Key: <keyId>.<secret> to call protected business routes (e.g., mint).
+
+Why this is better than ad-hoc key fields in each project
+
+Consolidates everything into one tab (list, issue, rotate, revoke).
+
+Uses Argon2id + pepper with one-time token display.
+
+Survives restarts (Postgres).
+
+Works with scope-based route protection you already use in PAR.
+
+Dev-friendly: simple localStorage token; production-safe with operator auth.

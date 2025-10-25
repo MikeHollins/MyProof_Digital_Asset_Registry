@@ -1,0 +1,151 @@
+Great clarifications—here are precise recommendations so your agent can integrate the “API Keys / Rotation” tab in MyProof PAR cleanly and securely, consistent with your current codebase.
+
+1) Schema Integration
+
+Recommendation: Use your existing partners and apiKeys tables from shared/schema.ts.
+
+If the existing schema already includes indexes/foreign keys and you’re already hashing w/ Argon2id, do not change column names.
+
+Only merge the differences below if missing:
+
+api_keys.status (active|revoked)
+
+api_keys.not_before, api_keys.not_after
+
+api_keys.rate_per_minute
+
+api_keys.last_used_at
+
+If you don’t have partners.active, add it (boolean default true) so you can disable a partner without revoking each key.
+
+If you want, I can diff your current shared/schema.ts and produce a migration-only patch that preserves your naming and indexes.
+
+2) Admin Bootstrap (first admin key)
+
+You have three good options—pick one (or do A for dev, B for prod):
+
+A) Dev-only bootstrap endpoint (fastest to demo)
+
+Add POST /api/admin/bootstrap available only in non-prod env:
+
+Creates (or upserts) partner "MyProof Operator" if missing.
+
+Issues an admin:* key and returns the one-time token.
+
+Then, in dev, paste this token into the UI Admin token prompt (see §4).
+
+B) Direct DB insert (prod)
+
+Securely insert the first admin key in DB via migration/SQL and provide it out-of-band.
+
+Never expose a bootstrap route in prod.
+
+C) Env-seeded one-time boot
+
+On first boot (NODE_ENV !== 'production'), if no admin key exists:
+
+create one from an env-supplied seed (ADMIN_BOOTSTRAP=true) and print plaintext token only to the local console.
+
+Require manual confirmation to disable bootstrapping before running in prod.
+
+UI Support (dev only):
+Add a tiny “Admin Settings” drawer (or a modal) to paste/set ADMIN_API_TOKEN (stored in localStorage). The page already uses localStorage.getItem("ADMIN_API_TOKEN"); give devs a button “Set Admin Token” to avoid manual devtools.
+
+In production: secure via your operator login; never store admin tokens in localStorage.
+
+3) Scope of this Tab
+
+You identified two areas in your screenshots:
+
+(A) Partner API Keys (list, issue, rotate, revoke)
+
+(B) Receipt Signing Key Rotation (verifier JWKS / receipt signing keys)
+
+Recommendation: Option B (Combined): one consolidated tab with two sub-panels:
+
+Partner API Keys — exactly as we built (issue/rotate/revoke/list/filters).
+
+Receipt Signer Keys — shows current receipt signing key metadata (kid, alg, rotated_at, next_rotation_at), and provides admin-only actions:
+
+Rotate signer key — requests the verifier service (or the same service in dev) to create a new ES256 key, publish to JWKS, and start signing receipts with the new kid.
+
+Quarantine old key — mark previous kid as valid for verify only, not for sign.
+
+Deprecate old key — (optional) set a sunset date and later remove from JWKS.
+
+If your receipt signer lives in a separate service (recommended in prod), keep the Rotation UI but call its API. In dev, allow local rotation for demo.
+
+If you prefer to ship in two steps, start with API Keys only, then add Receipt Signer later.
+
+4) Current Routing (frontend)
+
+Please share client/src/App.tsx so I match your sidebar + navigation pattern.
+
+From your prior messages, you use Wouter and a sidebar with pages like Dashboard, Proofs, Verification, Status Lists, Audit Logs, Settings.
+
+I’ll add “API Keys / Rotation” at /api-keys and, if combining signer rotation, a switcher within the page.
+
+In the meantime, the page component I provided (ApiKeys.tsx) follows your style: plain Tailwind + forms/tables. I’ll adapt to your Sidebar/Route wrapper once I see App.tsx.
+
+5) Final Task List (for your agent)
+
+A) Backend
+
+Confirm schema: ensure partners + apiKeys tables include the fields listed above (status, nbf/naf, rpm, last_used_at).
+
+Add services:
+
+src/utils/crypto.ts (pepper + Argon2id, as shown).
+
+src/services/apiKeys.ts (issue/rotate/revoke/list/validate).
+
+Add middleware src/middleware/apiKey.ts (auth + requireScopes).
+
+Add admin routes src/routes/adminApiKeys.ts (list partners, create partner, list keys, issue, rotate, revoke).
+
+(Optional) Dev bootstrap POST /api/admin/bootstrap to create first admin key for demo only.
+
+Protect business routes with apiKeyAuth + requireScopes([...]).
+
+Set env:
+
+APIKEY_PEPPER=<random-32+ bytes>
+APIKEY_ID_PREFIX=mpk_
+APIKEY_SECRET_BYTES=32
+
+
+B) Frontend
+
+Add page client/src/pages/ApiKeys.tsx (provided earlier).
+
+Add sidebar route /api-keys labelled “API Keys / Rotation”.
+
+Add “Admin Settings” modal (dev only) to set ADMIN_API_TOKEN (store in localStorage).
+
+(If combining signer rotation): a sub-panel that calls your verifier signer endpoints:
+
+GET /api/admin/receipt-signer → { currentKid, alg, rotatedAt, nextRotationAt }
+
+POST /api/admin/receipt-signer/rotate → returns { newKid, jwksUrl }
+
+POST /api/admin/receipt-signer/deprecate → marks old kid sunset
+
+C) Security
+
+Keep JOSE strictness for receipts.
+
+Never log Authorization or X-API-Key; maintain redaction.
+
+Enforce rate-per-minute per key in your limiter (keyed by keyId + IP).
+
+Secrets are one-time display only (keyId.secret), Argon2id + pepper in DB.
+
+6) Next step from you
+
+✅ Confirm: use existing schema, merge missing fields only.
+
+✅ Choose Admin Bootstrap method (I recommend Dev-only endpoint + Admin token modal in UI for fast demo).
+
+✅ Choose Tab scope: Combined (API keys + receipt signer) or Keys only.
+
+✅ Share client/src/App.tsx so I align routing & styling perfectly
