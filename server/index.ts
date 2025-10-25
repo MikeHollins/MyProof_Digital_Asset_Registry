@@ -1,9 +1,10 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
+import { registerDemoRoutes } from "./routes-demo";
 import { setupVite, serveStatic, log } from "./vite";
 import helmet from "helmet";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 
 const app = express();
 
@@ -18,13 +19,24 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
+      // Note: 'unsafe-inline' and 'unsafe-eval' required for Vite dev mode
+      // In production, use nonce-based CSP with pre-built assets
       scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://fonts.googleapis.com"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"],
+      upgradeInsecureRequests: [],
     },
   },
+  crossOriginEmbedderPolicy: true,
+  crossOriginOpenerPolicy: { policy: "same-origin" },
+  crossOriginResourcePolicy: { policy: "same-origin" },
+  referrerPolicy: { policy: "no-referrer" },
   hsts: {
     maxAge: 31536000,
     includeSubDomains: true,
@@ -57,9 +69,10 @@ const apiLimiter = rateLimit({
     const clientId = req.headers['x-client-id'] as string;
     if (clientId) return `client:${clientId}`;
     
-    // Fallback: Use IPv6-safe IP key generator (library's helper function)
-    // Pass the full Request object for proper IPv6 subnet handling
-    return `ip:${ipKeyGenerator(req)}`;
+    // Fallback: Use default IP-based key (IPv6-safe)
+    // The library handles IPv6 subnet normalization automatically
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    return `ip:${ip}`;
   },
 });
 
@@ -158,6 +171,9 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 });
 
 (async () => {
+  // Register demo routes (before main routes for proper ordering)
+  await registerDemoRoutes(app);
+  
   const server = await registerRoutes(app);
 
   // Error handling middleware

@@ -91,9 +91,8 @@ export default function Demo() {
   // Mutation: Seed demo asset
   const seedMutation = useMutation({
     mutationFn: async () => {
-      return apiRequest<DemoSeedResponse>("/api/demo/seed", {
-        method: "POST",
-      });
+      const res = await apiRequest("POST", "/api/demo/seed");
+      return await res.json() as DemoSeedResponse;
     },
     onSuccess: (data) => {
       setSeedData(data);
@@ -118,14 +117,12 @@ export default function Demo() {
   const verifyMutation = useMutation({
     mutationFn: async (receipt: string) => {
       if (!seedData) throw new Error("No seed data");
-      return apiRequest<VerifyResponse>(
+      const res = await apiRequest(
+        "POST",
         `/api/proof-assets/${seedData.demo.assetId}/re-verify`,
-        {
-          method: "POST",
-          body: JSON.stringify({ receipt }),
-          headers: { "Content-Type": "application/json" },
-        }
+        { receipt }
       );
+      return await res.json() as VerifyResponse;
     },
     onSuccess: (data) => {
       if (step === "seeded") {
@@ -159,9 +156,8 @@ export default function Demo() {
   // Mutation: Revoke
   const revokeMutation = useMutation({
     mutationFn: async () => {
-      return apiRequest<RevokeResponse>("/api/demo/revoke", {
-        method: "POST",
-      });
+      const res = await apiRequest("POST", "/api/demo/revoke");
+      return await res.json() as RevokeResponse;
     },
     onSuccess: (data) => {
       setStep("revoked");
@@ -182,9 +178,8 @@ export default function Demo() {
   // Mutation: Reset
   const resetMutation = useMutation({
     mutationFn: async () => {
-      return apiRequest<ResetResponse>("/api/demo/reset", {
-        method: "POST",
-      });
+      const res = await apiRequest("POST", "/api/demo/reset");
+      return await res.json() as ResetResponse;
     },
     onSuccess: () => {
       setStep("seeded");
