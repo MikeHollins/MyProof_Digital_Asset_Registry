@@ -12,6 +12,7 @@ import StatusLists from "@/pages/StatusLists";
 import AuditLogs from "@/pages/AuditLogs";
 import Settings from "@/pages/Settings";
 import Demo from "@/pages/Demo";
+import ApiKeys from "@/pages/ApiKeys";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -23,6 +24,7 @@ function Router() {
       <Route path="/status-lists" component={StatusLists} />
       <Route path="/audit-logs" component={AuditLogs} />
       <Route path="/demo" component={Demo} />
+      <Route path="/api-keys" component={ApiKeys} />
       <Route path="/settings" component={Settings} />
       <Route component={NotFound} />
     </Switch>

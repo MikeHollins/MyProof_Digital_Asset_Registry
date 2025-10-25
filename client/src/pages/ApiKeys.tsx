@@ -40,20 +40,28 @@ function getAdminToken() {
 }
 
 // Helper to set headers with admin token
-function authHeaders() {
+function authHeaders(): Record<string, string> {
   const token = getAdminToken();
-  return token ? { Authorization: `ApiKey ${token}` } : {};
+  if (token) {
+    return { Authorization: `ApiKey ${token}` };
+  }
+  return {};
 }
 
 // Fetch helper with admin auth
 async function fetchJSON(url: string, init?: RequestInit) {
+  const headers: HeadersInit = {
+    "Content-Type": "application/json",
+    ...authHeaders(),
+  };
+  
+  if (init?.headers) {
+    Object.assign(headers, init.headers);
+  }
+  
   const res = await fetch(url, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-      ...(init?.headers || {}),
-    },
+    headers,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);

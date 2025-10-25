@@ -6,6 +6,7 @@ import {
   FileText,
   PlayCircle,
   Settings,
+  Key,
 } from "lucide-react";
 import {
   Sidebar,
@@ -50,6 +51,11 @@ const menuItems = [
     title: "Demo",
     url: "/demo",
     icon: PlayCircle,
+  },
+  {
+    title: "API Keys",
+    url: "/api-keys",
+    icon: Key,
   },
   {
     title: "Settings",
