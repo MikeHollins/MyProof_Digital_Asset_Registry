@@ -1,7 +1,7 @@
 import { CheckCircle2, Clock, XCircle, AlertCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
-export type VerificationStatus = "verified" | "pending" | "revoked" | "suspended";
+export type VerificationStatus = "verified" | "pending" | "revoked" | "suspended" | "failed";
 
 interface StatusBadgeProps {
   status: VerificationStatus;
@@ -33,6 +33,12 @@ export function StatusBadge({ status, className = "" }: StatusBadgeProps) {
       label: "Suspended",
       color: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
       dotColor: "bg-orange-600",
+    },
+    failed: {
+      icon: XCircle,
+      label: "Verification Failed",
+      color: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
+      dotColor: "bg-red-600",
     },
   };
 
