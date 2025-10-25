@@ -1,0 +1,401 @@
+Below is a self-contained package you can drop into your PAR project. It includes:
+
+DB tables for partners + API keys (persisted in Postgres)
+
+Argon2id hashing (secrets never stored)
+
+Peppered key derivation (HMAC/HKDF with server-side pepper)
+
+Express middleware to authenticate X-API-Key / Authorization: ApiKey …
+
+Scope guard helpers for routes (assets:mint, status:update, etc.)
+
+Admin routes: issue, rotate, revoke keys, list keys
+
+Redaction policy for logs
+
+Replit agent instructions to generate files, install deps, and wire middleware
+
+Design goals: zero-PII, never log/retain plaintext keys; survive restarts; strong hashing; easy rotation; precise per-route authorization.
+
+0) Replit Agent — do these steps in PAR
+
+Install deps
+
+pnpm add argon2 zod uuid
+pnpm add drizzle-orm pg          # if not already present
+
+
+Create files
+
+backend/
+  src/
+    middleware/apiKey.ts
+    services/apiKeys.ts
+    routes/adminApiKeys.ts
+    utils/crypto.ts
+  shared/
+    schema.apikeys.ts
+
+
+Add env
+
+# .env (dev)
+APIKEY_PEPPER=change-this-pepper-now    # required in prod; 32+ random bytes
+APIKEY_ID_PREFIX=mpk_                   # visible key-id prefix (brand)
+APIKEY_SECRET_BYTES=32                  # secret length (bytes) – displayed once
+
+
+Wire middleware
+
+In server/index.ts (or your main Express entry), mount apiKeyAuth before protected routes and mount adminApiKeys under /api/admin/apikeys.
+
+1) DB schema (Drizzle or SQL)
+
+backend/shared/schema.apikeys.ts
+
+import { pgTable, text, timestamp, varchar, integer, uuid, boolean } from "drizzle-orm/pg-core";
+
+export const partners = pgTable("partners", {
+  partnerId: uuid("partner_id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  contactEmail: text("contact_email"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone:true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone:true }).notNull().defaultNow(),
+});
+
+export const apiKeys = pgTable("api_keys", {
+  keyId: varchar("key_id", { length: 64 }).primaryKey(),   // e.g., mpk_<shortid>
+  partnerId: uuid("partner_id").notNull(),
+  secretHash: text("secret_hash").notNull(),                // Argon2id (never store plaintext)
+  scopes: text("scopes").notNull(),                         // CSV: assets:mint,status:update,...
+  status: varchar("status", { length: 16 }).notNull().default("active"), // active|revoked
+  notBefore: timestamp("not_before", { withTimezone:true }).notNull().defaultNow(),
+  notAfter: timestamp("not_after", { withTimezone:true }),
+  ratePerMinute: integer("rate_per_minute").notNull().default(300),
+  createdAt: timestamp("created_at", { withTimezone:true }).notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone:true }),
+});
+
+
+SQL equivalent (if needed):
+
+CREATE TABLE IF NOT EXISTS partners (
+  partner_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  contact_email TEXT,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+  key_id VARCHAR(64) PRIMARY KEY,
+  partner_id UUID NOT NULL REFERENCES partners(partner_id),
+  secret_hash TEXT NOT NULL,
+  scopes TEXT NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'active',
+  not_before TIMESTAMPTZ NOT NULL DEFAULT now(),
+  not_after TIMESTAMPTZ,
+  rate_per_minute INT NOT NULL DEFAULT 300,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ
+);
+
+2) Crypto helpers (pepper + KDF + Argon2id)
+
+backend/src/utils/crypto.ts
+
+import crypto from "node:crypto";
+import argon2 from "argon2";
+
+const PEPPER = process.env.APIKEY_PEPPER || "";
+if (!PEPPER && process.env.NODE_ENV === "production") {
+  throw new Error("APIKEY_PEPPER is required in production");
+}
+
+export function randomBytesHex(n=32) {
+  return crypto.randomBytes(n).toString("hex");
+}
+
+// Stable short ID for keyId suffix (human-friendly)
+export function shortId(len=10) {
+  return crypto.randomBytes(Math.ceil(len/2)).toString("hex").slice(0,len);
+}
+
+// HKDF/HMAC-peppered derivation for the secret before hashing (defense-in-depth)
+export function deriveSecretForHash(secret: string): Buffer {
+  return crypto.createHmac("sha256", PEPPER).update(secret, "utf8").digest();
+}
+
+// Argon2id hash/verify (never store plaintext)
+export async function hashSecret(pepped: Buffer): Promise<string> {
+  // Reasonable defaults for online auth; tune for infra
+  return argon2.hash(pepped, {
+    type: argon2.argon2id,
+    memoryCost: 19456, // ~19MB
+    timeCost: 2,
+    parallelism: 1,
+  });
+}
+export async function verifySecret(hash: string, pepped: Buffer): Promise<boolean> {
+  try { return await argon2.verify(hash, pepped); } catch { return false; }
+}
+
+3) API Key service (issue, rotate, revoke, validate)
+
+backend/src/services/apiKeys.ts
+
+import { db } from "../shared/db"; // your Drizzle pool
+import { apiKeys, partners } from "../../shared/schema.apikeys";
+import { eq } from "drizzle-orm";
+import { randomBytesHex, shortId, deriveSecretForHash, hashSecret, verifySecret } from "../utils/crypto";
+
+const ID_PREFIX = process.env.APIKEY_ID_PREFIX || "mpk_";
+const SECRET_BYTES = Number(process.env.APIKEY_SECRET_BYTES || 32);
+
+export type Scope = 'assets:mint'|'assets:read'|'status:update'|'transfer:execute'|'audit:read'|'admin:*';
+
+export async function issueApiKey(partnerId: string, scopes: Scope[], notAfter?: Date) {
+  // 1) generate one-time secret & keyId
+  const secret = randomBytesHex(SECRET_BYTES);
+  const keyId = `${ID_PREFIX}${shortId(12)}`;
+
+  // 2) hash with pepper + argon2id
+  const hashed = await hashSecret(deriveSecretForHash(secret));
+
+  // 3) store metadata (never the plaintext)
+  await db.insert(apiKeys).values({
+    keyId, partnerId, secretHash: hashed,
+    scopes: scopes.join(","),
+    status: "active",
+    notAfter: notAfter,
+  });
+
+  // 4) return printable token: combine keyId + secret
+  // You can choose format "ApiKey <keyId>.<secret>" (easier to parse)
+  const token = `${keyId}.${secret}`;
+  return { token, keyId, partnerId, scopes };
+}
+
+export async function revokeApiKey(keyId: string) {
+  await db.update(apiKeys).set({ status: "revoked" }).where(eq(apiKeys.keyId, keyId));
+}
+
+export async function rotateApiKey(keyId: string) {
+  // revoke old; issue new for same partner/scopes
+  const rows = await db.select().from(apiKeys).where(eq(apiKeys.keyId, keyId));
+  if (!rows.length) throw new Error("key_not_found");
+  const old = rows[0];
+  await revokeApiKey(keyId);
+  return issueApiKey(old.partnerId, old.scopes.split(","), old.notAfter || undefined);
+}
+
+export async function findKey(keyId: string) {
+  const rows = await db.select().from(apiKeys).where(eq(apiKeys.keyId, keyId));
+  return rows[0] || null;
+}
+
+export async function validateApiKeyHeader(headerValue?: string) {
+  // Accept X-API-Key: <keyId>.<secret> OR Authorization: ApiKey <keyId>.<secret>
+  if (!headerValue) return { ok:false, reason:'missing_header' };
+  let token = headerValue.trim();
+  if (/^ApiKey\s+/i.test(token)) token = token.replace(/^ApiKey\s+/i, "");
+  const [keyId, secret] = token.split(".");
+  if (!keyId || !secret) return { ok:false, reason:'bad_format' };
+
+  const key = await findKey(keyId);
+  if (!key) return { ok:false, reason:'unknown_key' };
+  if (key.status !== "active") return { ok:false, reason:'key_inactive' };
+
+  const now = new Date();
+  if (key.notAfter && now > key.notAfter) return { ok:false, reason:'expired' };
+
+  // verify secret with pepper+argon2
+  const pepped = deriveSecretForHash(secret);
+  const match = await verifySecret(key.secretHash, pepped);
+  if (!match) return { ok:false, reason:'secret_mismatch' };
+
+  // load partner for context (optional)
+  const p = await db.select().from(partners).where(eq(partners.partnerId, key.partnerId));
+  if (!p.length || p[0].active === false) return { ok:false, reason:'partner_inactive' };
+
+  // update last_used_at
+  await db.execute(`UPDATE api_keys SET last_used_at=now() WHERE key_id=$1`, [keyId]);
+
+  const scopes = key.scopes.split(",");
+  return { ok:true, partnerId: key.partnerId, keyId, scopes };
+}
+
+4) Express middleware + scope guard
+
+backend/src/middleware/apiKey.ts
+
+import type { Request, Response, NextFunction } from "express";
+import { validateApiKeyHeader } from "../services/apiKeys";
+
+// Attach to req
+declare global {
+  namespace Express {
+    interface Request {
+      auth?: { partnerId: string; keyId: string; scopes: string[] }
+    }
+  }
+}
+
+const REDACT_KEYS = ['authorization','x-api-key','x-partner-key','api-key','apikey','token','secret'];
+
+export async function apiKeyAuth(req: Request, res: Response, next: NextFunction) {
+  try {
+    // Prefer X-API-Key, fallback to Authorization: ApiKey
+    const header = (req.headers['x-api-key'] as string) || (req.headers['authorization'] as string);
+    const result = await validateApiKeyHeader(header);
+    if (!result.ok) return res.status(401).json({ error:'unauthorized', reason: result.reason });
+
+    req.auth = { partnerId: result.partnerId!, keyId: result.keyId!, scopes: result.scopes! };
+    // redact sensitive headers for logs
+    for (const k of Object.keys(req.headers)) {
+      if (REDACT_KEYS.includes(k.toLowerCase())) req.headers[k] = '<redacted>' as any;
+    }
+    return next();
+  } catch (e:any) {
+    return res.status(500).json({ error:'auth_error', detail: e.message });
+  }
+}
+
+// Route guard
+export function requireScopes(required: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const have = req.auth?.scopes || [];
+    const ok = required.every(s => have.includes(s) || have.includes('admin:*'));
+    if (!ok) return res.status(403).json({ error:'forbidden', required });
+    return next();
+  };
+}
+
+5) Admin API for issuing/rotating/revoking keys
+
+backend/src/routes/adminApiKeys.ts
+
+import type { Express, Request, Response } from "express";
+import { z } from "zod";
+import { db } from "../shared/db";
+import { partners } from "../../shared/schema.apikeys";
+import { issueApiKey, revokeApiKey, rotateApiKey } from "../services/apiKeys";
+import { requireScopes, apiKeyAuth } from "../middleware/apiKey";
+
+// Only admin:* can call these
+const PartnerCreate = z.object({
+  name: z.string().min(2),
+  contactEmail: z.string().email().optional()
+});
+
+const IssueKey = z.object({
+  partnerId: z.string().uuid(),
+  scopes: z.array(z.string()).nonempty(),
+  notAfter: z.string().datetime().optional()
+});
+
+export function registerAdminApiKeys(app: Express) {
+  // Mount auth (you can also mount globally); admin routes require admin:* scope
+  app.post('/api/admin/partners', apiKeyAuth, requireScopes(['admin:*']), async (req: Request, res: Response) => {
+    const body = PartnerCreate.parse(req.body);
+    const r = await db.insert(partners).values({ name: body.name, contactEmail: body.contactEmail || null }).returning();
+    return res.json({ ok:true, partner: r[0] });
+  });
+
+  app.post('/api/admin/api-keys/issue', apiKeyAuth, requireScopes(['admin:*']), async (req, res) => {
+    const body = IssueKey.parse(req.body);
+    const notAfter = body.notAfter ? new Date(body.notAfter) : undefined;
+    const { token, keyId } = await issueApiKey(body.partnerId, body.scopes as any, notAfter);
+    // plaintext token is shown once:
+    return res.json({ ok:true, keyId, token });
+  });
+
+  app.post('/api/admin/api-keys/:keyId/revoke', apiKeyAuth, requireScopes(['admin:*']), async (req, res) => {
+    await revokeApiKey(req.params.keyId);
+    return res.json({ ok:true });
+  });
+
+  app.post('/api/admin/api-keys/:keyId/rotate', apiKeyAuth, requireScopes(['admin:*']), async (req, res) => {
+    const { token, keyId } = await rotateApiKey(req.params.keyId);
+    return res.json({ ok:true, keyId, token });
+  });
+}
+
+6) Hook middleware into protected routes
+
+Examples for PAR:
+
+// server/routes.ts (or wherever your protected endpoints are)
+import { apiKeyAuth, requireScopes } from "./middleware/apiKey";
+
+// Protect mint
+app.post("/api/proof-assets", apiKeyAuth, requireScopes(["assets:mint"]), async (req,res)=>{ ... });
+
+// Protect status updates
+app.post("/api/status-lists/:purpose/update", apiKeyAuth, requireScopes(["status:update"]), async (req,res)=>{ ... });
+
+// Protect transfers
+app.post("/api/proof-assets/:id/transfer", apiKeyAuth, requireScopes(["transfer:execute"]), async (req,res)=>{ ... });
+
+// (You can leave /api/health, /api/status/:id open)
+
+7) Redaction & logging hygiene
+
+You already redact secrets in logs. Keep it, and ensure any generic logger does:
+
+never print Authorization or X-API-Key
+
+never print Argon2 hashes
+
+print only partnerId, keyId, scopes, trace_id, verdicts, and truncated digests
+
+8) Quick smoke (issue → call → rotate → revoke)
+
+Issue partner & key
+
+# Admin (admin:* scope) creates a partner
+curl -s -X POST http://localhost:8080/api/admin/partners \
+  -H 'Authorization: ApiKey <ADMIN_KEYID.ADMIN_SECRET>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Demo Partner","contactEmail":"ops@partner.com"}'
+
+# Issue an API Key with mint+status scopes (plaintext token returned once)
+curl -s -X POST http://localhost:8080/api/admin/api-keys/issue \
+  -H 'Authorization: ApiKey <ADMIN_KEYID.ADMIN_SECRET>' \
+  -H 'Content-Type: application/json' \
+  -d '{"partnerId":"<uuid>","scopes":["assets:mint","status:update"]}'
+# => { token: "mpk_abcd1234.<secret>", keyId: "mpk_abcd1234" }
+
+
+Call protected route
+
+curl -s -X POST http://localhost:8080/api/proof-assets \
+  -H 'X-API-Key: mpk_abcd1234.<secret>' \
+  -H 'Content-Type: application/json' \
+  -d '{"issuer_did":"did:example:issuer","verifier_proof_ref":{...},"policy_cid":"cid:...","policy_hash":"...","constraint_hash":"..."}'
+
+
+Rotate / Revoke
+
+curl -s -X POST http://localhost:8080/api/admin/api-keys/mpk_abcd1234/rotate \
+  -H 'Authorization: ApiKey <ADMIN_KEYID.ADMIN_SECRET>'
+
+curl -s -X POST http://localhost:8080/api/admin/api-keys/mpk_abcd1234/revoke \
+  -H 'Authorization: ApiKey <ADMIN_KEYID.ADMIN_SECRET>'
+
+Why this matches (and improves upon) your other repo’s pattern
+
+Uses the X-API-Key / Authorization: ApiKey header pattern your partner kit references, with per-route scopes.
+
+Implements key rotation and one-time plaintext token display.
+
+Secrets are peppered and Argon2id-hashed (production-ready).
+
+Everything is persisted (Postgres) so it survives restarts (in contrast to in-memory).
+
+Privacy-first: logs are redacted; no PII; only key metadata stored.
+
+Easy Replit agent adoption: just create files, install deps, wire middleware and admin routes.
