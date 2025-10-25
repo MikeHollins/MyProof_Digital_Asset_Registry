@@ -193,6 +193,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (normalizedReceiptUrl !== normalizedProofUrl || 
           claims.status_ref.statusListIndex !== proof.statusListIndex ||
           claims.status_ref.statusPurpose !== proof.statusPurpose) {
+        console.error('[verify] Status reference mismatch:', {
+          receipt: {
+            url: normalizedReceiptUrl,
+            index: claims.status_ref.statusListIndex,
+            purpose: claims.status_ref.statusPurpose,
+          },
+          proof: {
+            url: normalizedProofUrl,
+            index: proof.statusListIndex,
+            purpose: proof.statusPurpose,
+          }
+        });
         return res.status(400).json({
           error: "Receipt validation failed: status reference mismatch (url, index, or purpose)",
         });
