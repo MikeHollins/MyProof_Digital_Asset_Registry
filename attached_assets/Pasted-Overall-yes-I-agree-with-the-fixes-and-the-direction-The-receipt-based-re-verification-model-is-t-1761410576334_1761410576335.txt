@@ -1,0 +1,104 @@
+Overall: yes, I agree with the fixes and the direction. The receipt-based re-verification model is the right privacy-first pattern, and your two concrete patches (status_ref binding and revocation bypass prevention) close the biggest holes. I’d keep them — with a few surgical corrections/tightenings below to make the flow bullet-proof and regulator-friendly.
+
+Keep (good as-is)
+
+Fast-path re-verify via signed receipt (no proof bytes stored).
+
+Bind to immutable commitments: proof_digest, policy_hash, constraint_hash.
+
+Respect revocation/suspension and never “reactivate” on re-verify.
+
+ES256 + JWKS with kid and rotation workflow.
+
+Tighten (small but important)
+
+Compare all status fields
+You’re already checking statusListUrl and statusListIndex. Also compare:
+
+statusPurpose (must equal revocation / suspension exactly)
+
+Normalization: trim and lowercase host in statusListUrl before compare; reject if URL normalization changes meaning (e.g., different scheme/port).
+
+Enforce JWT audience/expiry strictly
+
+Require aud to equal your service (domain or DID) and reject if absent.
+
+Enforce both nbf and exp. Treat clock skew explicitly (e.g., ±60s max).
+
+Add jti + replay cache
+
+Have the verifier include a unique jti in the receipt; maintain a short-TTL replay cache (e.g., 5–15 min). This prevents high-frequency replay within the valid window.
+
+Alg allow-list + JOSE header checks
+
+Reject everything except your allow-list (e.g., ES256 now, consider EdDSA later).
+
+Ensure typ is as expected (e.g., JWT) and no crit headers you don’t support.
+
+Explicitly disallow "alg":"none" or unexpected parameters.
+
+Digest rigor
+
+Persist the digest algorithm alongside proof_digest and check length/encoding on ingest and verify.
+
+On fresh-crypto path, recompute digest from provided proof bytes and require exact match with the receipt’s proof_digest before running verifier logic.
+
+Fail-closed status checks
+
+If the W3C Status List is unreachable, return verdict:"rejected" (or unknown) rather than “verified.”
+
+Cache lists with ETag/If-None-Match and set a max staleness window; if stale beyond threshold, fail closed.
+
+Key handling correction (docs)
+
+Your note says: if no env keys are provided, generate and log keys to console. Keep the generation dev-only and never log the private key.
+
+In production, the registry should only verify receipts (public JWKS). Signature issuance belongs in the verifier service with KMS/HSM.
+
+Policy-gated freshness
+
+Your doc describes freshness; ensure the code path respects a policy flag (e.g., requireFreshProof=true) or a time-since-last-verify threshold (e.g., >30 days → force fresh proof).
+
+On fresh path, do not persist the proof bytes; verify then discard.
+
+Telemetry privacy
+
+Redact receipt/token contents in logs. Keep only opaque IDs, policy_hash, constraint_hash, statusVerdict, and trace_id.
+
+Optional (nice to have, future-proof)
+
+Ed25519/EdDSA support alongside ES256 to increase crypto agility.
+
+kid pinning to a trust list per tenant/partner.
+
+Unit tests:
+
+receipt substitution (mismatch status url/index/purpose),
+
+revoked/suspended remain blocked,
+
+expired/nbf rejections,
+
+unreachable status list → fail closed,
+
+digest mismatch on fresh path.
+
+Tiny doc edits I recommend
+
+In your Environment Configuration, split roles explicitly:
+
+Registry: VERIFIER_JWKS_URL (public), no private key.
+
+Verifier service (separate component): RECEIPT_SIGNING_KEY (private, KMS/HSM).
+
+In “Security Properties,” add Replay Resistance with jti + nonce cache.
+
+In “Status List Check,” state fail-closed behavior and max staleness window.
+
+Bottom line
+
+Agree with how you applied the two main fixes — they’re correct and important.
+
+Make the small corrections above (statusPurpose compare, strict aud/exp/nbf/jti, alg allow-list, digest rigor, fail-closed status, dev-only key gen w/ no private-key logging).
+
+With those tightened, the re-verification flow is A-grade: privacy-preserving, secure, and audit-ready.
