@@ -1,4 +1,5 @@
 import { setWithTTL, get as redisGet } from "./redis-client";
+import { gunzipSync } from "zlib";
 
 /**
  * W3C Bitstring Status List Client
@@ -91,17 +92,12 @@ export async function fetchStatusList(
   if (cached) {
     const age = now - cached.fetchedAt;
     
-    // If cache is fresh enough, return it
-    if (age < maxStaleness) {
-      return {
-        bitstring: cached.bitstring,
-        etag: cached.etag,
-        fromCache: true,
-        age,
-      };
+    // Enforce maxStaleness even with cached data (fail-closed security)
+    // If cache is too old, we must fail closed - don't trust it even with ETag validation
+    if (age > maxStaleness) {
+      console.warn(`[status-list] Cache too old (age: ${age}ms, max: ${maxStaleness}ms) - fetching fresh data`);
+      statusListCache.delete(normalizedUrl); // Remove stale entry
     }
-    
-    // Cache exists but is stale - try to refresh with ETag
   }
   
   // Fetch from network with timeout
@@ -112,7 +108,8 @@ export async function fetchStatusList(
     const headers: Record<string, string> = {};
     
     // Use ETag for conditional fetch (304 Not Modified optimization)
-    if (cached?.etag) {
+    // Only send If-None-Match if we have a non-stale cache entry
+    if (cached?.etag && statusListCache.has(normalizedUrl)) {
       headers['If-None-Match'] = cached.etag;
     }
     
@@ -121,9 +118,9 @@ export async function fetchStatusList(
       headers,
     });
     
-    // 304 Not Modified - cache is still valid
-    if (response.status === 304 && cached) {
-      // Update fetchedAt timestamp
+    // 304 Not Modified - cache is still valid and fresh
+    if (response.status === 304 && cached && statusListCache.has(normalizedUrl)) {
+      // Update fetchedAt timestamp to reset staleness clock
       cached.fetchedAt = now;
       statusListCache.set(normalizedUrl, cached);
       
@@ -140,12 +137,24 @@ export async function fetchStatusList(
       throw new Error(`Status list fetch failed: HTTP ${response.status}`);
     }
     
-    // Parse response
-    const arrayBuffer = await response.arrayBuffer();
-    const bitstring = new Uint8Array(arrayBuffer);
+    // Parse W3C Bitstring Status List JSON response
+    const json = await response.json();
+    const encodedList = json.credentialSubject?.encodedList;
+    
+    if (!encodedList || typeof encodedList !== 'string') {
+      throw new Error('Invalid status list format: missing or invalid encodedList');
+    }
+    
+    // Base64 decode the gzipped bitstring
+    const gzippedBuffer = Buffer.from(encodedList, 'base64');
+    
+    // Gunzip decompress to get raw bitstring bytes
+    const decompressed = gunzipSync(gzippedBuffer);
+    const bitstring = new Uint8Array(decompressed);
+    
     const etag = response.headers.get('ETag') || undefined;
     
-    // Update cache
+    // Update cache with decompressed bitstring
     const cacheEntry: StatusListCache = {
       etag,
       bitstring,
