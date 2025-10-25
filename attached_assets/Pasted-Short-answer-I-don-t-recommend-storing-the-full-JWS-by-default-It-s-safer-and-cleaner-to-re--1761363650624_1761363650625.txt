@@ -1,0 +1,117 @@
+Short answer: I **don’t** recommend storing the full JWS by default. It’s safer and cleaner to **re-verify using a signed verification receipt** (our `verifier_proof_ref`) plus strict status/freshness rules, and only fetch or accept the full proof when a policy explicitly requires “fresh cryptography.” Below is a tighter, more secure pattern than “store the JWS”.
+
+---
+
+## What I agree with, and what I’d change
+
+### 👍 You’re right about the failure mode
+
+* Re-verification failed because the code only had **metadata** (hash/URI) and not the **cryptographic artifact** needed to re-run the signature check.
+
+### 👎 I don’t recommend “store the whole JWS”
+
+* A JWS **payload may contain PII** (depending on the issuer). Persisting it by default violates our **zero-PII, data-minimization** posture and increases breach blast radius.
+* Even if most payloads are safe today, you can’t guarantee all partners will keep PII out tomorrow.
+
+---
+
+## Better pattern: **Receipt-based re-verification** (2-tier model)
+
+**Tier A — Fast path (no PII, no JWS storage)**
+
+1. On first successful verification, the verifier issues a **Verification Receipt** = our **`verifier_proof_ref`** (JWS or LD-Proof) that **binds**:
+
+   * `proof_digest` (hash of the original JWS/zk-proof bytes)
+   * `policy_hash`, `constraint_hash`
+   * `status_ref` (Status List URL + index + purpose)
+   * `aud`, `nonce`, `notBefore`, `exp`, `kid`, `alg`
+2. Registry **persists only**:
+
+   * Receipt *digest*, receipt *URI* (or compact token)
+   * `policy_hash`, `constraint_hash`, and `status_ref`
+   * No raw JWS payload, no personal claims
+3. **Re-verification** = verify the **receipt signature**, check **status bit**, confirm **expiry window**, and match **commitments** (policy/constraint/proof digests).
+
+   * This proves the proof **was** valid under the stated policy at issuance, and **still is** valid unless revoked/suspended/expired.
+
+**Tier B — Fresh cryptography (only when policy requires it)**
+
+* Some use cases need proof freshness (e.g., keys rotated, time-bound attributes).
+* The API can **require the caller to attach the full proof again** (or provide a `proof_uri` with a **pinned digest**) *only when* a policy flag like `requireFreshProof=true` is set.
+* We still **don’t store** the JWS; we **verify and discard** after computing `proof_digest`.
+
+This gives you:
+
+* **Privacy by default** (no payload storage),
+* **Speed** for 99% of re-checks (receipt validation + status),
+* **True re-execution** only when a policy says it’s necessary.
+
+---
+
+## Re-verification endpoint logic (drop-in)
+
+**Inputs**: `{ receipt, optional_proof_uri?, optional_proof_bytes?, audience?, nonce? }`
+**Steps**
+
+1. **Verify receipt** (`verifier_proof_ref`): signature, `aud`, `nonce`, time window.
+2. **Check status**: resolve `status_ref` (bitstring), ensure not revoked/suspended.
+3. **Match commitments**: ensure receipt’s `policy_hash` / `constraint_hash` match the registry record.
+4. **If policy requires freshness**:
+
+   * If `proof_bytes` present: compute digest; must equal receipt’s `proof_digest`; then **verify the proof** (JWS/LD-Proof/ZK/HW).
+   * If only `proof_uri`: **fetch with SRI** (allowlist schemes: `cid:`, `https:`). Validate **digest match** first; then verify.
+5. **Return**: `{ verdict: valid|revoked|expired|rejected, reason?, signer_kid?, policy_hash, constraint_hash }`.
+
+**Important**: Don’t fetch untrusted URIs casually. If you support `https:` proof URIs, require:
+
+* **Pinned digest** (SRI): the content **must** hash to the `proof_digest` that’s in the receipt.
+* **Allowlist** of hosts or require `cid:` URIs (content-addressable, ideal).
+
+---
+
+## When (if ever) to store proof bytes
+
+If you absolutely need to keep proofs for audit:
+
+* **Encrypt-at-rest with envelope keys (KMS/HSM)**, and
+* **Store only for a short TTL** (e.g., 24–72 hours) for appeal or dispute windows,
+* **Reject proofs with PII** at intake: parse payload, **blocklist** fields like `name`, `dob`, `email`, `address`, etc. (we already planned a privacy-linter),
+* Or, better: accept **SD-JWT / selective disclosure** or **hash-committed claims** so payloads don’t carry raw identifiers.
+
+Default stance: **don’t store full proofs**. Keep **digest + receipt**.
+
+---
+
+## Threats & mitigations
+
+| Threat                     | Mitigation                                                                                         |
+| -------------------------- | -------------------------------------------------------------------------------------------------- |
+| **Replay of stale proof**  | Receipt has `aud`, `nonce`, short `exp`; Status List revokes; policy can require “fresh” re-prove. |
+| **Substitution attack**    | Receipt binds `proof_digest`, `policy_hash`, `constraint_hash` (all must match).                   |
+| **Key rotation**           | Receipt includes `kid`; keep historic keys; policy can force fresh proof after rotation cutover.   |
+| **URI tampering**          | Use `cid:` or `https:` with **pinned digest**; never trust bytes unless digest matches receipt.    |
+| **Correlation/PII risk**   | Never store payload; only store **hashes/CIDs/DIDs/receipts**.                                     |
+| **Tamper with revocation** | W3C **Bitstring Status List**; signed, cacheable, ETag-checked.                                    |
+
+---
+
+## Minimal code changes to make your flow safe & robust
+
+1. **Schema** (you already have this): use `verifier_proof_ref` and persist only its **digest + URI** (not raw payload).
+2. **Receipt issuance on first verify**: your verifier **returns a signed receipt** bound to `proof_digest`, `policy_hash`, `constraint_hash`, `status_ref`.
+3. **Re-verify endpoint**:
+
+   * **Fast path**: validate receipt + status + commitments (no proof bytes).
+   * **Fresh path (policy)**: require proof bytes or `proof_uri` with SRI; verify then discard.
+4. **Privacy guard**: linter rejects PII-looking claims in any inline proof payload.
+5. **Fetcher**: allow only `cid:` or `https:` with **digest pinning** and a **host allowlist**.
+
+---
+
+## Bottom line
+
+* **Disagree** with “store the full JWS” as your default.
+* **Recommend** receipt-based re-verification + status lists, with **fresh-proof re-execution** only when the policy says so.
+* This keeps **MyProof Registry** fast, privacy-preserving, and audit-ready — without taking on the data-breach risk of storing arbitrary payloads.
+
+If you want, I’ll write you the exact **`POST /v1/reverify`** handler (Fastify + Zod) with both paths implemented (fast path + fresh path) and the SRI-pinned `proof_uri` fetcher.
