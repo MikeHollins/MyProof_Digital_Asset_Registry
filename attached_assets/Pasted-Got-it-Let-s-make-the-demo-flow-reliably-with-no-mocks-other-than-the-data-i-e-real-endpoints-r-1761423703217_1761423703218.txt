@@ -1,0 +1,217 @@
+Got it. Let’s make the demo flow reliably with no mocks other than the data (i.e., real endpoints, real signing/verification, real status flips), by removing the three most common demo killers:
+
+Status list fetch (network / CORS / staleness)
+
+Receipt checks (aud/nbf/exp/jti/alg/kid/header order)
+
+Digest format drift (hex vs base64url)
+
+Below is a drop-in “Demo Hardening Kit”: small patches that keep everything secure and production-faithful, but make the demo deterministic and smooth.
+
+A) Make Status Lists local (real flow, not mocked)
+
+Problem: In demos, https://status.myproof.ai/... can 404/CORS/time out → your re-verify fails or returns the wrong verdict.
+
+Fix: Serve the actual W3C list locally from your Express app with ETag + fail-closed, and flip the real bit from the demo route. This is not “mocking the endpoint logic”; it’s hosting the list locally to eliminate external flakiness.
+
+1) Add an in-memory status list with ETag
+// server/status-local.ts
+import crypto from "node:crypto";
+type Purpose = 'revocation'|'suspension';
+
+const lists = new Map<string, { buf: Uint8Array; etag: string; ts: number }>();
+
+const DEFAULT_BITS = 131072; // 128k entries
+function newList(bits = DEFAULT_BITS) {
+  const buf = new Uint8Array(bits/8);
+  const etag = `W/"${crypto.randomUUID()}"`;
+  return { buf, etag, ts: Date.now() };
+}
+
+export function getOrInitList(url: string) {
+  let e = lists.get(url);
+  if (!e) { e = newList(); lists.set(url, e); }
+  return e;
+}
+
+export function setBit(buf: Uint8Array, index: number, v: 0|1) {
+  const byte = index >> 3, bit = index & 7;
+  if (v) buf[byte] |= (1 << bit); else buf[byte] &= ~(1 << bit);
+}
+
+export function getBit(buf: Uint8Array, index: number) {
+  const byte = index >> 3, bit = index & 7;
+  return (buf[byte] >> bit) & 1;
+}
+
+export function bumpEtag(url: string) {
+  const e = lists.get(url)!;
+  e.etag = `W/"${Date.now()}"`;
+  e.ts = Date.now();
+}
+
+export function registerStatusRoutes(app: import('express').Express) {
+  // GET /status/lists/:purpose/demo-001 (binary)
+  app.get('/status/lists/:purpose/demo-001', (req, res) => {
+    const { purpose } = req.params as { purpose: Purpose };
+    if (purpose !== 'revocation' && purpose !== 'suspension')
+      return res.status(400).end();
+
+    const url = `http://localhost:${process.env.PORT || 8080}${req.originalUrl}`;
+    const e = getOrInitList(url);
+
+    // ETag support
+    const inm = req.headers['if-none-match'];
+    if (inm && inm === e.etag) return res.status(304).end();
+
+    res.setHeader('ETag', e.etag);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'application/octet-stream');
+    return res.status(200).send(Buffer.from(e.buf));
+  });
+}
+
+2) Use the local list in the demo asset
+
+Change your seeded statusListUrl to local:
+
+// In routes-demo.ts (seed)
+const DEMO = {
+  ...,
+  statusListUrl: `http://localhost:${process.env.PORT || 8080}/status/lists/revocation/demo-001`,
+  statusListIndex: "284109",
+  statusPurpose: "revocation",
+};
+
+3) Flip the live bit (keep the real flow)
+// In routes-demo.ts /api/demo/revoke
+import { getOrInitList, setBit, bumpEtag } from './status-local';
+
+app.post("/api/demo/revoke", (req, res) => {
+  const { statusListUrl, index } = req.body || {};
+  if (!statusListUrl || !index) return res.status(400).json({ ok:false, error:'missing url or index' });
+
+  const e = getOrInitList(statusListUrl);
+  setBit(e.buf, Number(index), 1);   // set to revoked
+  bumpEtag(statusListUrl);
+  return res.json({ ok:true, statusListUrl, index: String(index), etag: e.etag });
+});
+
+
+Result: Your verifier fetches the real list from your server. You flip the real bit. ETag invalidates caches. The verdict flips immediately. No network surprises.
+
+B) Normalize digest & verify receipts deterministically
+
+Problem: One side uses hex, the other uses base64url. Or the aud/nbf/exp/jti checks are failing for timing or missing jti storage.
+
+Fix: Normalize digest formats before comparing, and make receipt verification order deterministic.
+
+// server/receipt-helpers.ts
+export function hexToBytes(hex: string) {
+  return Buffer.from(hex.toLowerCase(), 'hex');
+}
+export function b64uToBytes(b64u: string) {
+  return Buffer.from(b64u.replace(/-/g,'+').replace(/_/g,'/'), 'base64');
+}
+export function bytesEq(a: Uint8Array, b: Uint8Array) {
+  if (a.length !== b.length) return false;
+  for (let i=0;i<a.length;i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+export function digestsMatch(dbHex: string, receiptB64u: string) {
+  return bytesEq(hexToBytes(dbHex), b64uToBytes(receiptB64u));
+}
+
+
+Use in verify route:
+
+// server/routes.ts (inside :id/verify)
+if (!digestsMatch(asset.proof_digest_hex, claims.proof_digest)) {
+  return res.status(400).json({ error:'proof_digest_mismatch' });
+}
+
+
+Receipt verification order:
+
+decodeProtectedHeader → check alg allow-list, typ==='JWT', no crit.
+
+jwtVerify with audience and clockTolerance (±60s).
+
+Require presence of jti and enforce replay cache (Redis if available; in-memory fallback only in dev).
+
+Then triple-bind status (url + index + purpose) with URL normalization and fail-closed if list can’t be fetched or is stale.
+
+C) Make calls same-origin so CSP/CORS don’t bite
+
+Problem: Front-end calling http://localhost:8080 may hit CORS or CSP in some setups.
+
+Fix: In dev, use a proxy so the UI calls /api/... same-origin:
+
+Vite (client)
+
+// client/vite.config.ts
+export default defineConfig({
+  server: {
+    proxy: {
+      '/api': { target: 'http://localhost:8080', changeOrigin: true },
+      '/status': { target: 'http://localhost:8080', changeOrigin: true } // for local status lists
+    }
+  }
+});
+
+
+UI: always call relative /api/... and /status/....
+
+D) Time & replay safety for demos
+
+Seed receipts with nbf = now - 30, exp = now + 7d to avoid clock skew errors.
+
+Ensure jti replay cache works even if Redis is down. For demo, allow in-memory fallback:
+
+// receipt-service.ts
+const replayCache = new Map<string, number>(); // dev fallback
+
+async function isReplayed(jti: string) {
+  if (process.env.REDIS_URL) {
+    // use Redis SET NX PX 600000 ...
+  } else {
+    const now = Date.now();
+    // clean old entries every call (small demo sets)
+    for (const [k, t] of replayCache) if (now - t > 10*60*1000) replayCache.delete(k);
+    if (replayCache.has(jti)) return true;
+    replayCache.set(jti, now);
+    return false;
+  }
+}
+
+E) Quick “demo-safe” test routine
+
+Seed
+POST /api/demo/seed → returns asset, receipt, statusRef
+
+Verify (valid)
+POST /api/proof-assets/DEMO-ASSET-001/verify with receipt, aud= myproof-registry, nonce= demo123
+
+Revoke
+POST /api/demo/revoke with { statusListUrl, index }
+
+Verify (revoked)
+Same verify call → expect verdict: revoked
+
+All of the above uses your real code paths (receipt verification, status list fetch, URL normalization, digest checks). The only “mocking” is the seed data (policy/constraint docs + deterministic receipt), exactly within your stated constraint.
+
+F) If it still fails — quick diagnostics
+
+JWT failure → log the reason string from your verifyReceipt to the UI (redacted, not the token): alg_not_allowed, typ_invalid, nonce_mismatch, aud_mismatch, expired, not_yet_valid, replay_detected.
+
+Digest mismatch → print both encodings truncated: dbHex[:16] vs receiptB64u[:16].
+
+Status failure → show status_fetch_error or stale_status_list, and advise retry.
+
+CSP/CORS → ensure all frontend calls are relative (/api, /status).
+
+Clock skew → verify system clock; use nbf = now - 30.
+
+Bottom line
+
+With the local status list endpoint, digest normalization, strict-but-friendly receipt checks, and same-origin proxy, your demo runs the real flows (sign/verify, status flips, commitment matching) with zero PII and no external flakiness. You’re not mocking logic—just providing deterministic seed data so the story lands every time.

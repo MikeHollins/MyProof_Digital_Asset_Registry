@@ -1,0 +1,236 @@
+You’re absolutely right—the restart pain is caused by in-memory state. The fix is to persist the live state in PostgreSQL so the whole demo (and prod) survives restarts without mocking any logic.
+
+Below is a tight migration plan + drop-in code to move three transient components to Postgres:
+
+Status Lists (bitstrings + ETag)
+
+Receipt Replay Cache (jti persistence)
+
+Proof assets status (already in DB—ensure we rely on it)
+
+1) Schema upgrades (Drizzle or SQL)
+Drizzle (TypeScript)
+// shared/schema.ts (add/adjust)
+import { pgTable, text, timestamp, bytea, varchar, primaryKey } from "drizzle-orm/pg-core";
+
+export const statusLists = pgTable("status_lists", {
+  // Unique per URL; URL is the canonical key
+  url: text("url").primaryKey(),
+  purpose: text("purpose").notNull(),                     // 'revocation' | 'suspension'
+  bits: bytea("bits").notNull(),                          // raw bitstring bytes (GZIP optional)
+  etag: text("etag").notNull(),                           // W/"<hash>:<ts>"
+  updatedAt: timestamp("updated_at", { withTimezone:true }).notNull().defaultNow(),
+  bitLength: varchar("bit_length", { length: 12 }).notNull().default("131072"), // 128k bits default
+});
+
+// Store jti for replay protection across restarts
+export const jtiReplay = pgTable("jti_replay", {
+  jti: text("jti").primaryKey(),
+  expAt: timestamp("exp_at", { withTimezone:true }).notNull()
+});
+
+// Optional: ensure proof_assets has verificationStatus (monotonic)
+export const proofAssets = pgTable("proof_assets", {
+  // ...existing columns...
+  verificationStatus: text("verification_status").notNull().default('verified'), // 'verified' | 'revoked' | 'suspended'
+});
+
+SQL (equivalent)
+CREATE TABLE IF NOT EXISTS status_lists (
+  url TEXT PRIMARY KEY,
+  purpose TEXT NOT NULL,
+  bits BYTEA NOT NULL,
+  etag TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  bit_length VARCHAR(12) NOT NULL DEFAULT '131072'
+);
+
+CREATE TABLE IF NOT EXISTS jti_replay (
+  jti TEXT PRIMARY KEY,
+  exp_at TIMESTAMPTZ NOT NULL
+);
+
+-- If missing in proof_assets:
+ALTER TABLE proof_assets ADD COLUMN IF NOT EXISTS verification_status TEXT NOT NULL DEFAULT 'verified';
+
+2) Status List service (persist bits + ETag, no memory loss)
+// server/services/statusListRepo.ts
+import { db } from "../shared/db";
+import { statusLists } from "../shared/schema";
+import crypto from "node:crypto";
+import { eq } from "drizzle-orm";
+
+const DEFAULT_BITS = 131072;
+
+export async function ensureList(url: string, purpose: 'revocation'|'suspension') {
+  const existing = await db.select().from(statusLists).where(eq(statusLists.url, url));
+  if (existing.length) return existing[0];
+
+  const buf = Buffer.alloc(DEFAULT_BITS/8, 0);
+  const etag = `W/"${crypto.createHash('sha256').update(buf).digest('hex')}:${Date.now()}"`;
+  await db.insert(statusLists).values({
+    url, purpose, bits: buf, etag, bitLength: String(DEFAULT_BITS)
+  });
+  return (await db.select().from(statusLists).where(eq(statusLists.url, url)))[0];
+}
+
+export async function getList(url: string) {
+  const rows = await db.select().from(statusLists).where(eq(statusLists.url, url));
+  return rows[0] || null;
+}
+
+export async function getBit(url: string, index: number) {
+  const row = await getList(url);
+  if (!row) return null;
+  const buf = Buffer.from(row.bits);
+  const byte = index >> 3, bit = index & 7;
+  return (buf[byte] >> bit) & 1;
+}
+
+// Optimistic concurrency via ETAG; retry on conflict
+export async function applyOps(url: string, ops: {op:'set'|'clear'|'flip'; index:number}[]) {
+  for (let attempt=0; attempt<3; attempt++) {
+    const row = await getList(url);
+    if (!row) throw new Error('status_list_missing');
+
+    const buf = Buffer.from(row.bits); // copy
+    for (const {op, index} of ops) {
+      const byte = index >> 3, bit = index & 7;
+      if (op === 'set')    buf[byte] |= (1 << bit);
+      if (op === 'clear')  buf[byte] &= ~(1 << bit);
+      if (op === 'flip')   buf[byte] ^= (1 << bit);
+    }
+
+    const etag = `W/"${crypto.createHash('sha256').update(buf).digest('hex')}:${Date.now()}"`;
+
+    // update if etag unchanged (optimistic)
+    const res = await db.execute(
+      `UPDATE status_lists SET bits=$1, etag=$2, updated_at=now()
+         WHERE url=$3 AND etag=$4`, // simple SQL to avoid ORM race
+      [buf, etag, url, row.etag]
+    );
+    // @ts-ignore (node-postgres style rowCount)
+    if (res.rowCount && res.rowCount > 0) return { etag };
+  }
+  throw new Error('status_list_write_conflict');
+}
+
+
+Routes:
+
+// server/routes/status.ts
+import type { Express, Request, Response } from "express";
+import { ensureList, getList, applyOps } from "../services/statusListRepo";
+
+export function registerStatusRoutes(app: Express) {
+  // Serve a local status list (binary) with ETag
+  app.get('/status/lists/:purpose/demo-001', async (req: Request, res: Response) => {
+    const purpose = req.params.purpose as 'revocation'|'suspension';
+    const url = `http://localhost:${process.env.PORT || 8080}${req.originalUrl}`;
+    const row = await ensureList(url, purpose);
+    const inm = req.headers['if-none-match'];
+    if (inm && inm === row.etag) return res.status(304).end();
+    res.setHeader('ETag', row.etag);
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('application/octet-stream').send(Buffer.from(row.bits));
+  });
+
+  // Update list bits (POST /status-lists/:purpose/update)
+  app.post('/api/status-lists/:purpose/update', async (req: Request, res: Response) => {
+    const purpose = req.params.purpose as 'revocation'|'suspension';
+    const { statusListUrl, operations } = req.body || {};
+    if (!statusListUrl || !Array.isArray(operations)) {
+      return res.status(400).json({ error: 'invalid_payload' });
+    }
+    await ensureList(statusListUrl, purpose);
+    const { etag } = await applyOps(statusListUrl, operations.map((o:any)=>({ op:o.op, index:Number(o.index) })));
+    return res.json({ ok:true, etag });
+  });
+}
+
+
+Use this local URL in your demo seed so it persists across restarts:
+statusListUrl = http://localhost:8080/status/lists/revocation/demo-001
+
+3) Persist jti replay cache
+// server/services/jtiRepo.ts
+import { db } from "../shared/db";
+import { jtiReplay } from "../shared/schema";
+import { eq, lt } from "drizzle-orm";
+
+export async function isReplayed(jti:string, expSec:number) {
+  // try to insert; if conflict → replay
+  const expAt = new Date(expSec * 1000);
+  try {
+    await db.insert(jtiReplay).values({ jti, expAt });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+// simple cleanup (call on startup & every few minutes)
+export async function cleanupJti() {
+  await db.execute(`DELETE FROM jti_replay WHERE exp_at < now()`);
+}
+
+
+In your receipt verification, replace the in-memory map with isReplayed(jti, exp) and call cleanupJti() on a timer (e.g., every 5 minutes).
+
+4) Re-verify route (fail-closed, persistent)
+
+Keep your strict JOSE checks (alg allow-list, typ='JWT', no crit).
+
+After verifying receipt:
+
+Load the asset from DB (not memory).
+
+Ensure claims.proof_format === asset.proof_format.
+
+Triple bind status pointer with URL normalization.
+
+Fetch binary list from DB service (getList(url) or GET /status/lists/... → which also reads DB).
+
+If list missing/unavailable → reject/unknown (fail-closed).
+
+If bit = 1 → verdict: revoked.
+
+If asset.verificationStatus already revoked|suspended, never override.
+
+All of this now survives restarts because status bits, assets, and jti are in Postgres.
+
+5) Demo routes: no more volatile state
+
+/api/demo/seed: ensure the local status list row exists via ensureList(url, 'revocation') before inserting the asset; return the receipt.
+
+/api/demo/revoke: call applyOps(url, [{op:'set', index}]), then return the new ETag.
+
+6) Ops: background tasks
+
+JTI cleanup: setInterval(cleanupJti, 5 * 60_000).
+
+Status list compaction (optional): if you choose to gzip bits, store gzipped bits and expand on read. For demo, raw bytea is simpler.
+
+7) Why this fixes your restart issues
+
+Proof assets: already persisted—no change needed except consistently using DB.
+
+Status lists: bytea in Postgres, ETag regenerated on each change; no memory loss on restart.
+
+Receipt replay (jti): stored in Postgres with exp_at, so replays are blocked even after restarts.
+
+Audit events: already in DB—keep using them for the demo’s auditability story.
+
+8) Minimal rollout steps
+
+Apply the schema migration (Drizzle migrate or raw SQL).
+
+Add statusListRepo.ts and jtiRepo.ts services.
+
+Replace in-memory status list usage with DB-backed routes above.
+
+Swap your in-memory replay cache for isReplayed() in the receipt verifier.
+
+Update /api/demo/seed to ensure the list row exists (and to use the local list URL).
+
+Test: Seed → Verify (valid) → Revoke → Verify (revoked) → restart server → Verify (still revoked).
