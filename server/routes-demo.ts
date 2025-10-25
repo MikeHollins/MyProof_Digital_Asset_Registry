@@ -143,6 +143,14 @@ export async function registerDemoRoutes(app: Express) {
             },
             traceId: randomBytes(16).toString('hex'),
           });
+        } else {
+          // Exists - update status fields to ensure consistency with current demo constants
+          // Note: Don't override verificationStatus - it should be determined by status list check
+          await storage.updateProofAsset(proofAsset.proofAssetId, {
+            statusListUrl: DEMO.statusListUrl,
+            statusListIndex: DEMO.statusListIndex,
+            statusPurpose: DEMO.statusPurpose,
+          });
         }
       } catch (error) {
         console.error('[demo/seed] Error checking/creating asset:', error);
@@ -391,8 +399,18 @@ export async function registerDemoRoutes(app: Express) {
       const byteLength = Math.ceil(bitstringLength / 8);
       const bitstring = Buffer.alloc(byteLength, 0);
 
+      // Check if demo asset is revoked by querying the database
+      // This survives server restarts unlike the in-memory flag
+      const proofs = await storage.getProofAssets();
+      const demoProof = proofs.find(p => 
+        p.statusListUrl === DEMO.statusListUrl && 
+        p.statusListIndex === DEMO.statusListIndex
+      );
+      
+      const isRevoked = demoProof?.verificationStatus === "revoked";
+      
       // Set bit 284109 if demo is revoked
-      if (demoStatusRevoked) {
+      if (isRevoked) {
         const index = parseInt(DEMO.statusListIndex, 10);
         const byteIndex = Math.floor(index / 8);
         const bitIndex = index % 8;

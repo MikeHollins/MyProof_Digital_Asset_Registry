@@ -233,6 +233,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
+      console.log('[verify] Status check result:', {
+        verdict: statusCheck.verdict,
+        reason: statusCheck.reason,
+        statusListUrl: proof.statusListUrl,
+        statusListIndex: proof.statusListIndex,
+      });
+      
       statusVerdict = statusCheck.verdict === 'valid' ? 'verified' : statusCheck.verdict;
       statusCheckReason = statusCheck.reason;
 
