@@ -146,12 +146,19 @@ export async function registerDemoRoutes(app: Express) {
             traceId: randomBytes(16).toString('hex'),
           });
         } else {
-          // Exists - update status fields to ensure consistency with current demo constants
-          // Note: Don't override verificationStatus - it should be determined by status list check
+          // Exists - reset to verified status so demo can be run again
+          // Clear the W3C Status List bit (set to 0 = not revoked)
+          await applyOps(DEMO.statusListUrl, [
+            { op: 'clear', index: parseInt(DEMO.statusListIndex, 10) }
+          ]);
+          
+          // Reset verification status back to verified
           await storage.updateProofAsset(proofAsset.proofAssetId, {
             statusListUrl: DEMO.statusListUrl,
             statusListIndex: DEMO.statusListIndex,
             statusPurpose: DEMO.statusPurpose,
+            verificationStatus: "verified",
+            verificationTimestamp: new Date(),
           });
         }
       } catch (error) {
