@@ -22,7 +22,7 @@ Preferred communication style: Simple, everyday language.
 - **Framework**: Express.js with TypeScript on Node.js 20+.
 - **API Design**: RESTful JSON API under `/api/*`, with logging and raw body capture.
 - **Core Endpoints**: CRUD for proof assets, audit events, status lists, and system health.
-- **Data Storage**: Currently in-memory (`MemStorage`) for development, with a planned migration to PostgreSQL via Neon serverless and Drizzle ORM.
+- **Data Storage**: PostgreSQL via Neon serverless and Drizzle ORM. Demo system fully migrated from in-memory to database-backed persistence (October 2025).
 - **Privacy-First Design**:
     - **Zero PII**: No personally identifiable information is stored.
     - **Content Addressability**: Uses CIDv1 for referencing policies, constraints, etc.
@@ -32,7 +32,13 @@ Preferred communication style: Simple, everyday language.
 **Database Schema (PostgreSQL + Drizzle ORM)**:
 - `proof_assets`: Stores cryptographic proofs with strict privacy, unique commitment, and relevant indexes.
 - `audit_events`: Append-only transparency log with hash-chaining.
-- `status_lists`: W3C Bitstring Status List registry with ETag support.
+- `status_lists`: W3C Bitstring Status List registry with ETag support (gzip-compressed, base64-encoded, optimistically locked).
+- `jti_replay`: JWT ID replay protection cache for receipt verification (database-backed with automatic expiry cleanup).
+
+**Database-Backed Services**:
+- `server/services/status-list-repo.ts`: PostgreSQL persistence for W3C Bitstring Status Lists with atomic bit operations and ETag-based optimistic locking.
+- `server/services/jti-repo.ts`: PostgreSQL-backed JTI replay cache with automatic cleanup of expired entries (runs every 5 minutes).
+- Background cleanup tasks ensure database hygiene without manual intervention.
 
 **Data Flow & Verification Pipeline**:
 
