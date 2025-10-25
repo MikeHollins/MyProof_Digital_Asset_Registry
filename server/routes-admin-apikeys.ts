@@ -20,6 +20,50 @@ const IssueKey = z.object({
 });
 
 export function registerAdminApiKeys(app: Express) {
+  // Dev-only bootstrap endpoint to create first admin API key
+  app.post('/api/admin/bootstrap', async (req: Request, res: Response) => {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({ ok: false, error: 'bootstrap_disabled_in_production' });
+    }
+
+    try {
+      // Check if admin partner already exists
+      let adminPartner = await db.select().from(partners).where(eq(partners.name, 'PAR System Admin')).limit(1);
+      
+      if (adminPartner.length === 0) {
+        // Create admin partner
+        const newPartner = await db.insert(partners).values({
+          name: 'PAR System Admin',
+          contactEmail: 'admin@example.com',
+          active: true
+        }).returning();
+        adminPartner = newPartner;
+      }
+
+      // Issue admin API key
+      const { token, keyId } = await issueApiKey(
+        adminPartner[0].partnerId,
+        ['admin:*'] as Scope[],
+        undefined // no expiry
+      );
+
+      return res.json({
+        ok: true,
+        message: 'Bootstrap admin API key created successfully',
+        partner: adminPartner[0],
+        keyId,
+        token,
+        instructions: {
+          step1: 'Copy the token above (it will only be shown once)',
+          step2: 'Click "Set Admin Token" in the UI and paste the token',
+          step3: 'You can now manage partners and API keys'
+        }
+      });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
   app.post('/api/admin/partners', apiKeyAuth, requireScopes(['admin:*']), async (req: Request, res: Response) => {
     try {
       const body = PartnerCreate.parse(req.body);
