@@ -4,6 +4,7 @@ import {
   CheckCircle,
   List,
   FileText,
+  PlayCircle,
   Settings,
 } from "lucide-react";
 import {
@@ -44,6 +45,11 @@ const menuItems = [
     title: "Audit Logs",
     url: "/audit-logs",
     icon: FileText,
+  },
+  {
+    title: "Demo",
+    url: "/demo",
+    icon: PlayCircle,
   },
   {
     title: "Settings",

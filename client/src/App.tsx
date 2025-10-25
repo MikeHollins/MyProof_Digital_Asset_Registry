@@ -11,6 +11,7 @@ import Verification from "@/pages/Verification";
 import StatusLists from "@/pages/StatusLists";
 import AuditLogs from "@/pages/AuditLogs";
 import Settings from "@/pages/Settings";
+import Demo from "@/pages/Demo";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -21,6 +22,7 @@ function Router() {
       <Route path="/verification" component={Verification} />
       <Route path="/status-lists" component={StatusLists} />
       <Route path="/audit-logs" component={AuditLogs} />
+      <Route path="/demo" component={Demo} />
       <Route path="/settings" component={Settings} />
       <Route component={NotFound} />
     </Switch>
