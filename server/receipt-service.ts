@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify, createRemoteJWKSet, importJWK, type JWTPayload, decodeProtectedHeader } from "jose";
 import { createHash, randomBytes } from "crypto";
 import { setWithTTL, exists as redisExists } from "./redis-client";
+import { isReplayed } from "./services/jti-repo";
 
 // Algorithm allow-list for receipt signing/verification
 const ALLOWED_ALGORITHMS = ["ES256"] as const;
@@ -261,18 +262,18 @@ export async function verifyReceipt(
       };
     }
     
-    // Check jti replay cache (10-minute window using Redis with in-memory fallback)
+    // Check jti replay protection (database-backed, survives restarts)
     const jti = String(payload.jti);
-    const replayCacheKey = `replay:jti:${jti}`;
+    const expSec = Number(payload.exp);
     
-    // Try to set the jti in cache (NX = only if not exists)
-    // If it returns null, the key already exists (replay detected)
-    const setResult = await setWithTTL(replayCacheKey, '1', REPLAY_CACHE_TTL_MS, 'NX');
+    // Check if this JTI has been used before
+    // The function will record it in the database if it's new
+    const replayed = await isReplayed(jti, expSec);
     
-    if (setResult !== 'OK') {
+    if (replayed) {
       return {
         ok: false,
-        reason: `replay_detected: jti ${jti} already used within ${REPLAY_CACHE_TTL_MS / 1000}s window`,
+        reason: `replay_detected: jti ${jti} has already been used`,
       };
     }
     
