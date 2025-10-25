@@ -73,6 +73,15 @@ export const statusLists = pgTable("status_lists", {
   purposeIdx: index("ix_purpose").on(table.purpose),
 }));
 
+// JTI Replay Cache - Prevent receipt replay attacks across restarts
+export const jtiReplay = pgTable("jti_replay", {
+  jti: text("jti").primaryKey(),
+  expAt: timestamp("exp_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  expAtIdx: index("ix_exp_at").on(table.expAt),
+}));
+
 // Zod Schemas for API validation
 export const proofFormatEnum = z.enum([
   'ZK_PROOF',
@@ -152,6 +161,7 @@ export type InsertProofAsset = z.infer<typeof insertProofAssetSchema>;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type InsertAuditEvent = z.infer<typeof insertAuditEventSchema>;
 export type StatusList = typeof statusLists.$inferSelect;
+export type JtiReplay = typeof jtiReplay.$inferSelect;
 export type ProofFormat = z.infer<typeof proofFormatEnum>;
 export type DigestAlg = z.infer<typeof digestAlgEnum>;
 export type VerifierProofRef = z.infer<typeof verifierProofRefSchema>;
