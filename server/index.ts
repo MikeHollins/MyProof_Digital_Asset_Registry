@@ -173,6 +173,10 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   // Register main routes first (initializes receipt keys)
   const server = await registerRoutes(app);
   
+  // Register status list routes (database-backed W3C Bitstring Status Lists)
+  const { registerStatusListRoutes } = await import("./routes-status-list");
+  registerStatusListRoutes(app);
+  
   // Register demo routes (requires receipt keys to be initialized)
   await registerDemoRoutes(app);
 
