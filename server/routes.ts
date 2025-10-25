@@ -130,19 +130,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Re-verify a proof asset (receipt-based verification - privacy-first, no proof bytes needed)
   app.post("/api/proof-assets/:id/verify", async (req, res) => {
     try {
+      console.log('[verify] ========== VERIFICATION REQUEST START ==========');
+      console.log('[verify] Asset ID:', req.params.id);
+      
       const proof = await storage.getProofAsset(req.params.id);
       if (!proof) {
+        console.log('[verify] ❌ Proof asset not found');
         return res.status(404).json({ error: "Proof asset not found" });
       }
+      
+      console.log('[verify] ✓ Proof asset loaded:', {
+        assetId: proof.proofAssetId,
+        currentStatus: proof.verificationStatus,
+        hasReceipt: !!proof.verifierProofRef,
+      });
 
       // Check if we have a receipt for fast-path verification
       if (!proof.verifierProofRef) {
+        console.log('[verify] ❌ No receipt available');
         return res.status(400).json({ 
           error: "Cannot re-verify: no verification receipt available. This proof was registered before receipt-based verification was enabled." 
         });
       }
 
       // Verify the receipt signature (fast path - no proof bytes needed!)
+      console.log('[verify] Step 1: Verifying receipt signature...');
       const { verifyReceipt } = await import("./receipt-service");
       const receiptVerification = await verifyReceipt(proof.verifierProofRef, {
         publicKey: receiptPublicKey!,
@@ -150,33 +162,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       if (!receiptVerification.ok || !receiptVerification.claims) {
+        console.log('[verify] ❌ Receipt signature verification failed:', receiptVerification.reason);
         return res.status(400).json({
           error: "Receipt verification failed",
           reason: receiptVerification.reason,
         });
       }
+      
+      console.log('[verify] ✓ Receipt signature valid');
 
       const claims = receiptVerification.claims;
 
       // Validate commitments match (prevent substitution attacks)
+      console.log('[verify] Step 2: Validating commitments...');
       if (claims.proof_digest !== proof.proofDigest) {
+        console.log('[verify] ❌ Proof digest mismatch');
         return res.status(400).json({
           error: "Receipt validation failed: proof digest mismatch",
         });
       }
       if (claims.policy_hash !== proof.policyHash) {
+        console.log('[verify] ❌ Policy hash mismatch');
         return res.status(400).json({
           error: "Receipt validation failed: policy hash mismatch",
         });
       }
       if (claims.constraint_hash !== proof.constraintHash) {
+        console.log('[verify] ❌ Constraint hash mismatch');
         return res.status(400).json({
           error: "Receipt validation failed: constraint hash mismatch",
         });
       }
+      console.log('[verify] ✓ All commitments match');
 
       // Validate status reference matches (prevent receipt substitution from different proof)
       // Normalize URLs for comparison to handle case differences and trailing slashes
+      console.log('[verify] Step 3: Validating status reference...');
       let normalizedReceiptUrl: string;
       let normalizedProofUrl: string;
       
@@ -184,6 +205,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         normalizedReceiptUrl = normalizeUrl(claims.status_ref.statusListUrl);
         normalizedProofUrl = normalizeUrl(proof.statusListUrl);
       } catch (error: any) {
+        console.log('[verify] ❌ Invalid status list URL format');
         return res.status(400).json({
           error: "Invalid status list URL format",
           details: error.message,
@@ -193,7 +215,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (normalizedReceiptUrl !== normalizedProofUrl || 
           claims.status_ref.statusListIndex !== proof.statusListIndex ||
           claims.status_ref.statusPurpose !== proof.statusPurpose) {
-        console.error('[verify] Status reference mismatch:', {
+        console.error('[verify] ❌ Status reference mismatch:', {
           receipt: {
             url: normalizedReceiptUrl,
             index: claims.status_ref.statusListIndex,
@@ -209,8 +231,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           error: "Receipt validation failed: status reference mismatch (url, index, or purpose)",
         });
       }
+      console.log('[verify] ✓ Status reference matches');
 
       // Check W3C Status List with fail-closed security model
+      console.log('[verify] Step 4: Checking W3C Status List...');
       const { verifyProofStatus } = await import("./status-list-client");
       
       let statusVerdict: string;
@@ -225,6 +249,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       if (statusCheck.verdict === 'unknown') {
         // Fail closed: status list unreachable or stale
+        console.log('[verify] ❌ Status list unreachable - failing closed');
         return res.status(503).json({
           error: "Status verification unavailable - failing closed for security",
           reason: statusCheck.reason,
@@ -233,17 +258,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
-      console.log('[verify] Status check result:', {
+      console.log('[verify] ✓ Status check result:', {
         verdict: statusCheck.verdict,
         reason: statusCheck.reason,
-        statusListUrl: proof.statusListUrl,
         statusListIndex: proof.statusListIndex,
       });
       
       statusVerdict = statusCheck.verdict === 'valid' ? 'verified' : statusCheck.verdict;
       statusCheckReason = statusCheck.reason;
+      
+      console.log('[verify] Final status verdict:', statusVerdict);
 
       // Update verification timestamp (proof is still valid based on receipt)
+      console.log('[verify] Updating proof asset with new status...');
       const updatedProof = await storage.updateProofAsset(proof.proofAssetId, {
         verificationStatus: statusVerdict,
         verificationTimestamp: new Date(),
@@ -264,6 +291,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         traceId: crypto.randomUUID(),
       });
 
+      console.log('[verify] ========== VERIFICATION COMPLETE ==========');
+      console.log('[verify] Returning response with status:', statusVerdict);
+
       res.json({
         success: true,
         verificationStatus: statusVerdict,
@@ -283,6 +313,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         proof: updatedProof,
       });
     } catch (error: any) {
+      console.log('[verify] ❌ EXCEPTION:', error.message);
+      console.log('[verify] Stack:', error.stack);
       res.status(500).json({ error: error.message });
     }
   });
