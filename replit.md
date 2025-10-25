@@ -34,6 +34,8 @@ Preferred communication style: Simple, everyday language.
 - `audit_events`: Append-only transparency log with hash-chaining.
 - `status_lists`: W3C Bitstring Status List registry with ETag support (gzip-compressed, base64-encoded, optimistically locked).
 - `jti_replay`: JWT ID replay protection cache for receipt verification (database-backed with automatic expiry cleanup).
+- `partners`: Partner organizations for API key multi-tenancy (name, contact email, active status).
+- `api_keys`: Scoped API keys with Argon2id hashing (never stores plaintext secrets, peppered derivation).
 
 **Database-Backed Services**:
 - `server/services/status-list-repo.ts`: PostgreSQL persistence for W3C Bitstring Status Lists with atomic bit operations and ETag-based optimistic locking.
@@ -108,6 +110,89 @@ Preferred communication style: Simple, everyday language.
 - Sensitive data automatically redacted from logs
 - Only opaque IDs, truncated hashes, statusVerdict, trace_id logged
 
+## API Key Authentication & Partner Management
+
+**Architecture**: Multi-tenant API key authentication system with Argon2id hashing, pepper-based key derivation, and scope-based authorization (October 2025).
+
+### Partner Management
+- **Database**: `partners` table stores partner organizations with contact info and active status
+- **Fields**: partnerId (UUID), name, contactEmail, active flag, timestamps
+- **Access Control**: Only users with `admin:*` scope can create/manage partners
+
+### API Key System
+- **Storage**: `api_keys` table with secure Argon2id hashing (never stores plaintext secrets)
+- **Key Format**: `{prefix}{id}.{secret}` (e.g., `mpk_abc123def456.hex64...`)
+  - Prefix: Configurable brand identifier (default: `mpk_`)
+  - ID: Short identifier for key lookup
+  - Secret: 256-bit random hex string (shown once at creation)
+- **Security Features**:
+  - Argon2id hashing with server-side pepper (HMAC-SHA256)
+  - Peppered key derivation for defense-in-depth
+  - Automatic header redaction in logs
+  - Rate limiting per key (configurable per partner)
+  - Temporal validity (notBefore/notAfter timestamps)
+  
+### Scope-Based Authorization
+- **Available Scopes**:
+  - `assets:mint` - Create new proof assets
+  - `assets:read` - View proof assets
+  - `status:update` - Update W3C Status List bits
+  - `transfer:execute` - Execute proof asset transfers
+  - `audit:read` - Read audit events
+  - `admin:*` - Full administrative access (create partners, issue keys, etc.)
+- **Scope Guards**: Middleware validates scopes before allowing access to protected routes
+- **Wildcard Admin**: Keys with `admin:*` scope automatically pass all scope checks
+
+### Admin API Endpoints
+All admin endpoints require authentication with `admin:*` scope:
+- `POST /api/admin/partners` - Create new partner organization
+- `GET /api/admin/partners` - List all partners
+- `POST /api/admin/api-keys/issue` - Issue new API key for a partner
+  - Request: `{ partnerId, scopes, notAfter? }`
+  - Response: `{ token, keyId }` (plaintext token shown once)
+- `GET /api/admin/api-keys` - List all API keys (secrets redacted)
+- `POST /api/admin/api-keys/:keyId/revoke` - Revoke an API key
+- `POST /api/admin/api-keys/:keyId/rotate` - Rotate an API key (revoke old, issue new)
+
+### Authentication Flow
+1. **Client Request**: Include API key in header
+   - `X-API-Key: {keyId}.{secret}` OR
+   - `Authorization: ApiKey {keyId}.{secret}`
+2. **Middleware Validation**:
+   - Parse keyId and secret
+   - Lookup key in database
+   - Verify status is "active"
+   - Check temporal validity (notBefore/notAfter)
+   - Derive peppered secret and verify Argon2id hash
+   - Verify partner is active
+   - Update lastUsedAt timestamp
+3. **Scope Authorization**: Route-specific middleware checks required scopes
+4. **Request Processing**: Attach partner context to `req.auth`
+
+### Key Management Operations
+- **Issue**: Create new API key with specified scopes and optional expiry
+- **Rotate**: Revoke old key and issue new key with same partner/scopes (for key rotation policies)
+- **Revoke**: Mark key as inactive (soft delete for audit trail)
+- **List**: View all keys with metadata (secrets never returned)
+
+### Security Properties
+- **No Plaintext Storage**: Secrets never persisted (only Argon2id hashes)
+- **Peppered Derivation**: Server-side pepper adds defense-in-depth
+- **Replay Protection**: Keys validated on every request
+- **Automatic Redaction**: Sensitive headers redacted from logs
+- **Temporal Control**: Optional notBefore/notAfter for time-bound access
+- **Rate Limiting**: Per-key rate limits (configurable)
+- **Scope Isolation**: Partners can only perform authorized actions
+
+### Environment Variables (API Keys)
+- `APIKEY_PEPPER` - Server-side pepper for key derivation (required in production, 32+ random bytes)
+- `APIKEY_ID_PREFIX` - Visible key ID prefix for branding (default: `mpk_`)
+- `APIKEY_SECRET_BYTES` - Secret length in bytes (default: 32 = 256 bits)
+
+### 7. Privacy-First Logging
+- Sensitive data automatically redacted from logs
+- Only opaque IDs, truncated hashes, statusVerdict, trace_id logged
+
 ## External Dependencies
 
 **Required Services**:
@@ -115,7 +200,7 @@ Preferred communication style: Simple, everyday language.
 
 **Third-Party Libraries**:
 - **Frontend**: `@tanstack/react-query`, `@radix-ui/*`, `wouter`, `date-fns`, `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`, `react-hook-form`, `@hookform/resolvers`.
-- **Backend**: `express`, `drizzle-orm`, `drizzle-zod`, `@neondatabase/serverless`, `ws`, `nanoid`.
+- **Backend**: `express`, `drizzle-orm`, `drizzle-zod`, `@neondatabase/serverless`, `ws`, `nanoid`, `argon2`, `uuid`.
 - **Build Tools**: `vite`, `esbuild`, `tsx`, `tailwindcss`, `postcss`, `autoprefixer`.
 
 **External APIs & Integrations (Future)**:
@@ -137,3 +222,6 @@ Preferred communication style: Simple, everyday language.
 - `PROOF_MAX_SIZE_BYTES` - Max proof payload size (default: 128KB)
 - `PROOF_FETCH_TIMEOUT_MS` - Timeout for proof fetches (default: 3s)
 - `PROOF_ALLOWED_HOSTS` - Comma-separated allowlist for proof URIs (production)
+- `APIKEY_PEPPER` - Server-side pepper for API key derivation (required in production, 32+ random bytes)
+- `APIKEY_ID_PREFIX` - Visible key ID prefix for branding (default: `mpk_`)
+- `APIKEY_SECRET_BYTES` - Secret length in bytes for API keys (default: 32 = 256 bits)

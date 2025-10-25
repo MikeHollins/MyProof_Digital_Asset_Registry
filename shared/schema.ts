@@ -101,7 +101,7 @@ export const apiKeys = pgTable("api_keys", {
   status: varchar("status", { length: 16 }).notNull().default("active"),
   notBefore: timestamp("not_before", { withTimezone: true }).notNull().defaultNow(),
   notAfter: timestamp("not_after", { withTimezone: true }),
-  ratePerMinute: integer("rate_per_minute").notNull().default(300),
+  ratePerMinute: integer("rate_per_minute").notNull().default(300), // Future: Per-key rate limiting (not yet enforced)
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
 }, (table) => ({

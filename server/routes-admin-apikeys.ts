@@ -11,9 +11,11 @@ const PartnerCreate = z.object({
   contactEmail: z.string().email().optional()
 });
 
+const scopeEnum = z.enum(['assets:mint', 'assets:read', 'status:update', 'transfer:execute', 'audit:read', 'admin:*']);
+
 const IssueKey = z.object({
   partnerId: z.string().uuid(),
-  scopes: z.array(z.string()).nonempty(),
+  scopes: z.array(scopeEnum).nonempty(),
   notAfter: z.string().datetime().optional()
 });
 
