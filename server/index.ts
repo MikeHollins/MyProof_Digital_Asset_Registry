@@ -73,6 +73,51 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false }));
 
+// Redact sensitive data from logs (privacy-first logging)
+function redactSensitiveData(obj: any): any {
+  if (!obj || typeof obj !== 'object') return obj;
+  
+  const redacted = Array.isArray(obj) ? [...obj] : { ...obj };
+  const sensitiveKeys = [
+    'verifierProofRef',     // Receipt tokens (JWS)
+    'verifier_proof_ref',   // Receipt in requests
+    'privateKey',           // Private keys
+    'private_key',
+    'proof_bytes',          // Proof payloads
+    'proofBytes',
+    'password',             // Auth credentials
+    'token',
+    'secret',
+    'authorization'
+  ];
+  
+  for (const key in redacted) {
+    // Redact sensitive keys
+    if (sensitiveKeys.some(sk => key.toLowerCase().includes(sk.toLowerCase()))) {
+      redacted[key] = '<redacted>';
+    }
+    // Recursively redact nested objects
+    else if (typeof redacted[key] === 'object' && redacted[key] !== null) {
+      redacted[key] = redactSensitiveData(redacted[key]);
+    }
+  }
+  
+  // Keep only safe fields for proof objects
+  if (redacted.proofAssetId || redacted.proof_asset_id) {
+    return {
+      proofAssetId: redacted.proofAssetId || redacted.proof_asset_id,
+      issuerDid: redacted.issuerDid,
+      proofFormat: redacted.proofFormat,
+      verificationStatus: redacted.verificationStatus,
+      proofDigest: redacted.proofDigest?.substring(0, 16) + '...',  // Truncate digests
+      policyHash: redacted.policyHash?.substring(0, 16) + '...',
+      constraintHash: redacted.constraintHash?.substring(0, 16) + '...',
+    };
+  }
+  
+  return redacted;
+}
+
 // Response integrity digests and logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
@@ -99,11 +144,13 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        // Redact sensitive data before logging
+        const redacted = redactSensitiveData(capturedJsonResponse);
+        logLine += ` :: ${JSON.stringify(redacted)}`;
       }
 
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
+      if (logLine.length > 200) {
+        logLine = logLine.slice(0, 199) + "…";
       }
 
       log(logLine);

@@ -2,9 +2,7 @@
 
 ## Overview
 
-The Proof-Asset Registry (PAR) is a privacy-first, enterprise-grade cryptographic proof management platform designed for secure registration, verification, and lifecycle management of verifiable cryptographic proofs. The system emphasizes data minimization (no PII storage), content-addressable immutability using CIDs, W3C-compliant credential status tracking, and append-only audit transparency.
-
-PAR serves as a trusted registry for cryptographic proofs including zero-knowledge proofs, JSON Web Signatures (JWS), linked data proofs, hardware attestations, Merkle proofs, and blockchain transaction proofs. The platform enables verifiers, issuers, and relying parties to register proof assets, track their verification status, manage revocation/suspension via W3C Bitstring Status Lists, and maintain a complete audit trail of all state-changing operations.
+The Proof-Asset Registry (PAR) is a privacy-first, enterprise-grade platform for secure registration, verification, and lifecycle management of cryptographic proofs. It supports various proof types, including zero-knowledge proofs and JSON Web Signatures, by emphasizing data minimization, content-addressable immutability using CIDs, W3C-compliant credential status tracking, and append-only audit transparency. PAR aims to provide a trusted registry for verifiers, issuers, and relying parties to manage proof assets, track their verification status, and maintain a complete audit trail.
 
 ## User Preferences
 
@@ -12,211 +10,118 @@ Preferred communication style: Simple, everyday language.
 
 ## System Architecture
 
-### Application Structure
+**Application Structure**: The project uses a monorepo structure with `client/` (React/Vite frontend), `server/` (Express.js backend), and `shared/` (TypeScript schemas/types).
 
-**Monorepo Architecture**: The application uses a modern full-stack monorepo structure with three primary domains:
+**Frontend Architecture**:
+- **Stack**: React 18, TypeScript, Vite, Wouter for routing, TanStack Query for server state.
+- **UI**: Radix UI primitives, shadcn/ui (new-york style), Tailwind CSS, IBM Plex Sans/Mono fonts.
+- **Design Philosophy**: Emphasizes precision, monospace fonts for technical identifiers, and clear hierarchy.
+- **State Management**: Primarily TanStack Query for server state; local component state for UI.
 
-- `client/`: React-based frontend built with Vite
-- `server/`: Express.js backend API
-- `shared/`: Shared TypeScript schemas and types (Drizzle ORM schemas, Zod validators)
+**Backend Architecture**:
+- **Framework**: Express.js with TypeScript on Node.js 20+.
+- **API Design**: RESTful JSON API under `/api/*`, with logging and raw body capture.
+- **Core Endpoints**: CRUD for proof assets, audit events, status lists, and system health.
+- **Data Storage**: Currently in-memory (`MemStorage`) for development, with a planned migration to PostgreSQL via Neon serverless and Drizzle ORM.
+- **Privacy-First Design**:
+    - **Zero PII**: No personally identifiable information is stored.
+    - **Content Addressability**: Uses CIDv1 for referencing policies, constraints, etc.
+    - **Cryptographic Commitments**: Proof assets identified by deterministic commitments.
+    - **Audit Transparency**: Cryptographically hash-chained audit events for all state changes.
 
-### Frontend Architecture
+**Database Schema (PostgreSQL + Drizzle ORM)**:
+- `proof_assets`: Stores cryptographic proofs with strict privacy, unique commitment, and relevant indexes.
+- `audit_events`: Append-only transparency log with hash-chaining.
+- `status_lists`: W3C Bitstring Status List registry with ETag support.
 
-**Framework Stack**:
-- **React 18** with TypeScript for type-safe component development
-- **Vite** as the build tool and development server
-- **Wouter** for lightweight client-side routing
-- **TanStack Query (React Query)** for server state management, data fetching, and caching
+**Data Flow & Verification Pipeline**:
 
-**UI Component System**:
-- **Radix UI** primitives for accessible, unstyled component foundation
-- **shadcn/ui** component library using the "new-york" style variant
-- **Tailwind CSS** for utility-first styling with custom design tokens
-- **IBM Plex Sans** and **IBM Plex Mono** typography (loaded via Google Fonts)
+### 1. Proof Registration (with Receipt Generation)
+- Client submits proof metadata (issuer DID, proof format, digest, policy CID, etc.)
+- Server generates commitment hash from proof data
+- Proof verification executed (JWS signature validation, ZK proof verification stub)
+- **Receipt Generation**: After successful verification, generates signed JWS receipt binding:
+  - `proof_digest`: SHA-256 digest of proof bytes
+  - `policy_hash`: Hash of policy constraints
+  - `constraint_hash`: Hash of verification constraints
+  - `status_ref`: W3C Status List reference (URL + index + purpose)
+  - `jti`: Unique JWT ID for replay protection
+  - `aud`, `nbf`, `exp`: Required JWT claims for security
+- Receipt stored in `verifier_proof_ref` field (only the receipt, not the proof bytes!)
+- Status list allocation (assigns index in revocation/suspension bitstring)
+- Atomic write to storage with audit event creation
+- Response includes verification result, assigned IDs, status references, and receipt
 
-**Design Philosophy**: Following Carbon Design System principles adapted for cryptographic data management - precision over decoration, monospace fonts for technical identifiers (DIDs, CIDs, hashes), and clear visual hierarchy for complex proof metadata.
+### 2. Receipt-Based Re-Verification (Fast Path)
+- **Privacy-First Design**: Re-verification uses only the signed receipt, never requires original proof bytes
+- Verification steps:
+  1. **Receipt Signature Verification**: Validate JWS signature using verifier's public key
+  2. **Algorithm & Header Validation**: Enforce ES256 allow-list, validate `typ:JWT`, reject `crit` headers
+  3. **JWT Claims Validation**: Verify `aud`, `nbf`, `exp` with ±60s clock skew, check `jti` replay cache
+  4. **Commitment Matching**: Verify proof_digest, policy_hash, constraint_hash match stored values (prevents substitution attacks)
+  5. **Status Reference Matching**: Validate statusListUrl (normalized), statusListIndex, and statusPurpose match
+  6. **Status List Check**: Validate proof not revoked/suspended via W3C Bitstring Status List
+- **Benefits**:
+  - Eliminates PII storage risk (no proof payload retained)
+  - Fast verification (cryptographic operations only, no proof re-execution)
+  - Tamper-evident (receipt signature + commitment binding)
+  - Replay-resistant (jti-based deduplication)
+- Updates verification timestamp and creates audit event
 
-**State Management Strategy**:
-- TanStack Query handles all server state (proofs, audit events, status lists, system health)
-- Local component state for UI interactions (filters, view modes, form inputs)
-- No global client-side state management library needed due to server-driven architecture
+### 3. Receipt Cryptography & Security Model
+- **Signing Algorithm**: ES256 (ECDSA P-256 with SHA-256)
+- **Algorithm Allow-List**: Only ES256 permitted, explicitly rejects `alg:none` and unsupported algorithms
+- **Key Management**:
+  - Development: Keypair loaded from environment variables
+  - Production: Separate Registry (public key only) and Verifier Service (private key in KMS/HSM) roles
+- **Strict JWT Validation**:
+  - `typ` header must be "JWT"
+  - `alg` must be ES256 (allow-list enforcement)
+  - `aud` (audience) required and validated
+  - `nbf` (not before) and `exp` (expiry) enforced with ±60s clock skew tolerance
+  - `jti` (JWT ID) checked against replay cache (10-minute TTL)
+- **Security Properties**:
+  - Non-repudiation, Integrity, Freshness, Binding, Replay Resistance, Clock Skew Tolerance
 
-### Backend Architecture
+### 4. Status Management & Fail-Closed Security
+- **W3C Bitstring Status List** pattern for efficient revocation/suspension
+- **Fail-Closed Behavior** (Production): If status list unreachable or stale, verification fails closed
+- **MVP Behavior**: Respects existing revoked/suspended status (fail-safe)
+- **URL Normalization**: Status list URLs normalized before comparison
+- **Status Reference Validation**: Receipt must match all three components
 
-**Server Framework**: Express.js with TypeScript, running on Node.js 20+
+### 5. Digest Validation & Encoding
+- **Algorithm Support**: sha2-256, sha3-256, blake3, multihash
+- **Encoding Validation**: Digests must be hex-encoded with correct length
+- **Persistence**: digestAlg stored alongside proofDigest
 
-**API Design**:
-- RESTful endpoints under `/api/*` namespace
-- JSON request/response format with explicit content-type validation
-- Logging middleware captures request duration and response bodies (truncated for brevity)
-- Raw body capture for potential signature verification
+### 6. Audit Trail
+- Every mutation creates a hash-chained audit event for integrity verification
 
-**Core API Endpoints**:
-- `GET /api/health` - System health check with database connectivity status
-- `GET /api/stats` - Dashboard statistics (total proofs, verification counts, status breakdowns)
-- `GET /api/proof-assets` - List all registered proof assets with filtering
-- `GET /api/proof-assets/:id` - Get single proof asset by ID
-- `POST /api/proof-assets` - Register new proof asset with verification
-- `POST /api/proof-assets/:id/verify` - Re-verify existing proof asset, updates verification metadata and creates audit event
-- `GET /api/audit-events` - Retrieve append-only audit log
-- `GET /api/status-lists` - W3C Bitstring Status List management
-
-**Data Storage Strategy**:
-
-The application uses an abstraction layer (`IStorage` interface) allowing multiple storage backends:
-
-1. **In-Memory Storage** (`MemStorage`): Current implementation for development/testing using Map data structures and in-memory arrays
-2. **Database Storage** (future/production): PostgreSQL via Neon serverless with Drizzle ORM
-
-**Rationale**: The storage abstraction enables rapid prototyping without database setup while maintaining a clear migration path to production persistence. The interface defines all CRUD operations needed for proof assets, audit events, and status lists.
-
-### Database Schema (PostgreSQL + Drizzle ORM)
-
-**Tables**:
-
-1. **`proof_assets`**: Core registry of cryptographic proofs with strict privacy constraints
-   - Primary key: `proof_asset_id` (UUID)
-   - Unique constraint on `proof_asset_commitment` (ensures no duplicate proof registrations)
-   - Indexes on: `issuer_did`, `proof_format`, `verification_status`, `status_list_url + status_list_index`
-   - **No PII fields**: Only stores DIDs, cryptographic digests, CIDs, and status pointers
-
-2. **`audit_events`**: Append-only transparency log with hash-chaining capability
-   - Primary key: `event_id` (UUID)
-   - Captures: event type, asset ID, payload (JSONB), trace ID, previous hash, current hash
-   - Enables Merkle-tree-style verification of event sequence integrity
-
-3. **`status_lists`**: W3C Bitstring Status List registry
-   - Stores compressed bitstrings for revocation/suspension tracking
-   - ETag support for optimistic concurrency control
-
-**Privacy-First Design Decisions**:
-- **Zero PII Storage**: Schema prohibits personally identifiable information (names, DOB, addresses, SSN)
-- **Content Addressability**: All policies, constraints, circuits, and schemas referenced via CIDv1 (IPFS-style content identifiers)
-- **Cryptographic Commitments**: Proof assets identified by deterministic commitments derived from proof content
-- **Audit Transparency**: Every state change logged with cryptographic hash chaining
-
-### Authentication & Authorization (Planned)
-
-The architecture anticipates these auth mechanisms (not yet implemented):
-
-- **OIDC** for partner/enterprise authentication
-- **DID-Auth** via custom headers for decentralized identity verification
-- **mTLS** for service-to-service communication in production deployments
-
-### Data Flow & Verification Pipeline
-
-1. **Proof Registration (with Receipt Generation)**:
-   - Client submits proof metadata (issuer DID, proof format, digest, policy CID, etc.)
-   - Server generates commitment hash from proof data
-   - Proof verification executed (JWS signature validation, ZK proof verification stub)
-   - **Receipt Generation**: After successful verification, generates signed JWS receipt binding:
-     - `proof_digest`: SHA-256 digest of proof bytes
-     - `policy_hash`: Hash of policy constraints
-     - `constraint_hash`: Hash of verification constraints
-     - `status_ref`: W3C Status List reference (URL + index)
-   - Receipt stored in `verifier_proof_ref` field (only the receipt, not the proof bytes!)
-   - Status list allocation (assigns index in revocation/suspension bitstring)
-   - Atomic write to storage with audit event creation
-   - Response includes verification result, assigned IDs, status references, and receipt
-
-2. **Receipt-Based Re-Verification (Fast Path)**:
-   - **Privacy-First Design**: Re-verification uses only the signed receipt, never requires original proof bytes
-   - Verification steps:
-     1. **Receipt Signature Verification**: Validate JWS signature using verifier's public key
-     2. **Commitment Matching**: Verify proof_digest, policy_hash, constraint_hash match stored values (prevents substitution attacks)
-     3. **Status List Check**: Validate proof not revoked/suspended via W3C Bitstring Status List
-   - **Benefits**:
-     - Eliminates PII storage risk (no proof payload retained)
-     - Fast verification (cryptographic operations only, no proof re-execution)
-     - Tamper-evident (receipt signature + commitment binding)
-   - Updates verification timestamp and creates audit event
-   - **Fallback**: Fresh verification path (future) will fetch proof via URI, verify digest, run crypto, then discard
-
-3. **Receipt Cryptography**:
-   - **Signing Algorithm**: ES256 (ECDSA P-256 with SHA-256)
-   - **Key Management**:
-     - Development: Keypair loaded from `RECEIPT_VERIFIER_PUBLIC_JWK` and `RECEIPT_VERIFIER_PRIVATE_JWK` environment variables
-     - Production: KMS/HSM-backed signing with key rotation strategy
-   - **Receipt Structure** (JWS Compact Serialization):
-     - Header: `{"alg": "ES256", "typ": "JWT", "kid": "<key_id>"}`
-     - Payload: `{"proof_digest": "...", "policy_hash": "...", "constraint_hash": "...", "status_ref": {...}, "iss": "...", "aud": "...", "iat": ..., "exp": ...}`
-     - Signature: ECDSA signature over header + payload
-   - **Security Properties**:
-     - Non-repudiation: Verifier cannot deny issuing receipt
-     - Integrity: Any tampering invalidates signature
-     - Freshness: Expiry timestamp prevents indefinite reuse
-     - Binding: Commitments prevent proof substitution
-
-4. **Status Management**:
-   - W3C Bitstring Status List pattern for efficient revocation/suspension
-   - Bitwise operations on compressed status lists (not yet implemented)
-   - ETag-based optimistic locking prevents concurrent update conflicts
-
-5. **Audit Trail**:
-   - Every mutation (MINT, USE, TRANSFER, STATUS_UPDATE) creates an audit event
-   - Hash chaining links events together (previous_hash → current_hash)
-   - Enables cryptographic verification of event sequence integrity
+### 7. Privacy-First Logging
+- Sensitive data automatically redacted from logs
+- Only opaque IDs, truncated hashes, statusVerdict, trace_id logged
 
 ## External Dependencies
 
-### Required Services
+**Required Services**:
+- **PostgreSQL Database**: Via Neon serverless for production persistence.
 
-1. **PostgreSQL Database**: Production persistence layer
-   - Accessed via Neon serverless (@neondatabase/serverless)
-   - Connection pooling via `pg-pool`
-   - WebSocket support for serverless environments
+**Third-Party Libraries**:
+- **Frontend**: `@tanstack/react-query`, `@radix-ui/*`, `wouter`, `date-fns`, `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`, `react-hook-form`, `@hookform/resolvers`.
+- **Backend**: `express`, `drizzle-orm`, `drizzle-zod`, `@neondatabase/serverless`, `ws`, `nanoid`.
+- **Build Tools**: `vite`, `esbuild`, `tsx`, `tailwindcss`, `postcss`, `autoprefixer`.
 
-2. **Drizzle ORM**: Type-safe database toolkit
-   - Schema definition in `shared/schema.ts`
-   - Zod schema generation for runtime validation
-   - Migration management via `drizzle-kit`
+**External APIs & Integrations (Future)**:
+- ZK Proof Verification Services
+- W3C Verifiable Credentials (status list hosting)
+- IPFS/Content-Addressable Storage
+- DID Resolvers
+- OpenTelemetry Collectors
 
-### Third-Party Libraries
-
-**Frontend**:
-- `@tanstack/react-query` - Server state management and caching
-- `@radix-ui/*` - Headless accessible UI primitives (accordion, dialog, dropdown, select, tabs, toast, tooltip, etc.)
-- `wouter` - Lightweight routing
-- `date-fns` - Date formatting and manipulation
-- `class-variance-authority` + `clsx` + `tailwind-merge` - Dynamic className composition
-- `lucide-react` - Icon library
-- `react-hook-form` + `@hookform/resolvers` - Form state management with Zod validation
-
-**Backend**:
-- `express` - HTTP server framework
-- `drizzle-orm` + `drizzle-zod` - ORM and schema validation
-- `@neondatabase/serverless` - Neon PostgreSQL client with WebSocket support
-- `ws` - WebSocket client for serverless database connections
-- `nanoid` - Unique ID generation
-
-**Build Tools**:
-- `vite` - Frontend build tool and dev server
-- `esbuild` - Backend bundling
-- `tsx` - TypeScript execution for development
-- `tailwindcss` + `postcss` + `autoprefixer` - CSS toolchain
-
-### External APIs & Integrations (Future)
-
-The architecture anticipates integration with:
-
-1. **ZK Proof Verification Services**: For validating zero-knowledge proofs (Groth16, PLONK, STARKs)
-2. **W3C Verifiable Credentials**: Status list hosting and resolution
-3. **IPFS/Content-Addressable Storage**: For storing policies, schemas, and circuit definitions via CIDs
-4. **DID Resolvers**: For verifying issuer and subject DIDs
-5. **OpenTelemetry Collectors**: For distributed tracing and observability
-
-### Environment Configuration
-
-**Required Environment Variables**:
-- `DATABASE_URL`: PostgreSQL connection string (Neon serverless format)
-- `NODE_ENV`: Runtime environment (development/production)
-- `STATUS_BASE_URL`: Base URL for W3C Status List resolution (optional, defaults to example.com)
-- `RECEIPT_VERIFIER_PUBLIC_JWK`: JSON Web Key for receipt verification (ES256 public key)
-- `RECEIPT_VERIFIER_PRIVATE_JWK`: JSON Web Key for receipt signing (ES256 private key)
-
-**Note**: If receipt verifier keys are not provided, the system will generate a new keypair on startup and log the keys to console. To persist keys across restarts, copy the logged keys to environment variables.
-
-**Build & Deployment**:
-- Development: `npm run dev` - Concurrent frontend (Vite) + backend (tsx watch mode)
-- Production build: `npm run build` - Vite static build + esbuild server bundle
-- Database schema: `npm run db:push` - Drizzle schema sync to PostgreSQL
+**Environment Variables**:
+- `DATABASE_URL`
+- `NODE_ENV`
+- `STATUS_BASE_URL`
+- `RECEIPT_VERIFIER_PUBLIC_JWK`
+- `RECEIPT_VERIFIER_PRIVATE_JWK`

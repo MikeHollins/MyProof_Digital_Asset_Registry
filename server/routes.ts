@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertProofAssetSchema, updateStatusListSchema } from "@shared/schema";
 import { z } from "zod";
-import { generateProofCommitment, generateCID } from "./crypto-utils";
+import { generateProofCommitment, generateCID, normalizeUrl, validateDigestEncoding } from "./crypto-utils";
 import { verifyProof } from "./proof-verification";
 import { generateReceipt, generateTestKeypair } from "./receipt-service";
 
@@ -13,29 +13,49 @@ let receiptPublicKey: JsonWebKey | null = null;
 
 async function initReceiptKeys() {
   // Try to load keypair from environment (for persistence across restarts)
-  const privateKeyEnv = process.env.RECEIPT_SIGNING_KEY;
-  const publicKeyEnv = process.env.RECEIPT_PUBLIC_KEY;
+  const privateKeyEnv = process.env.RECEIPT_VERIFIER_PRIVATE_JWK;
+  const publicKeyEnv = process.env.RECEIPT_VERIFIER_PUBLIC_JWK;
   
   if (privateKeyEnv && publicKeyEnv) {
     try {
       receiptSigningKey = JSON.parse(privateKeyEnv);
       receiptPublicKey = JSON.parse(publicKeyEnv);
-      console.log(`[receipt-service] Loaded persisted receipt keys (kid: ${(receiptSigningKey as any).kid})`);
+      const kid = (receiptPublicKey as any).kid || 'unknown';
+      console.log(`[receipt-keys] ✓ Loaded receipt verifier keys from environment (kid: ${kid})`);
       return;
     } catch (error) {
-      console.error("[receipt-service] Failed to parse receipt keys from environment, generating new ones");
+      console.error("[receipt-keys] Failed to parse receipt keys from environment, generating new ones");
     }
   }
   
-  // Generate new keypair if not found in environment
+  // Only in development mode
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      "[receipt-keys] PRODUCTION ERROR: Receipt verifier keys not configured. " +
+      "Set RECEIPT_VERIFIER_PUBLIC_JWK and RECEIPT_VERIFIER_PRIVATE_JWK environment variables. " +
+      "In production, use KMS/HSM for key management."
+    );
+  }
+  
+  // Generate new keypair for development only
+  console.warn("[receipt-keys] ⚠️  DEVELOPMENT MODE: Generating ephemeral receipt keys");
   const { privateKey, publicKey } = await generateTestKeypair();
   receiptSigningKey = privateKey;
   receiptPublicKey = publicKey;
   
-  console.log(`[receipt-service] Generated new receipt signing key (kid: ${(privateKey as any).kid})`);
-  console.log("[receipt-service] ⚠️  IMPORTANT: To persist this key across restarts, set these environment variables:");
-  console.log(`RECEIPT_SIGNING_KEY='${JSON.stringify(privateKey)}'`);
-  console.log(`RECEIPT_PUBLIC_KEY='${JSON.stringify(publicKey)}'`);
+  const kid = (publicKey as any).kid || 'unknown';
+  console.log(`[receipt-keys] Generated new keypair (kid: ${kid})`);
+  console.log("[receipt-keys] ⚠️  To persist keys across restarts, set these environment variables:");
+  console.log("[receipt-keys] Public JWKS (safe to share):");
+  console.log(`RECEIPT_VERIFIER_PUBLIC_JWK='${JSON.stringify(publicKey)}'`);
+  console.log("[receipt-keys] ⚠️  PRIVATE KEY - Keep secret, never commit to version control:");
+  console.log(`RECEIPT_VERIFIER_PRIVATE_JWK='<redacted in logs - check startup console>'`);
+  
+  // Only show private key on first generation, not in logs
+  if (process.stdout.isTTY) {
+    console.log("\n[receipt-keys] Private JWK (display once, save securely):");
+    console.log(JSON.stringify(privateKey, null, 2));
+  }
 }
 
 // Initialize keys on startup
@@ -151,23 +171,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Validate status reference matches (prevent receipt substitution from different proof)
-      if (claims.status_ref.statusListUrl !== proof.statusListUrl || 
-          claims.status_ref.statusListIndex !== proof.statusListIndex) {
+      // Normalize URLs for comparison to handle case differences and trailing slashes
+      let normalizedReceiptUrl: string;
+      let normalizedProofUrl: string;
+      
+      try {
+        normalizedReceiptUrl = normalizeUrl(claims.status_ref.statusListUrl);
+        normalizedProofUrl = normalizeUrl(proof.statusListUrl);
+      } catch (error: any) {
         return res.status(400).json({
-          error: "Receipt validation failed: status reference mismatch",
+          error: "Invalid status list URL format",
+          details: error.message,
+        });
+      }
+      
+      if (normalizedReceiptUrl !== normalizedProofUrl || 
+          claims.status_ref.statusListIndex !== proof.statusListIndex ||
+          claims.status_ref.statusPurpose !== proof.statusPurpose) {
+        return res.status(400).json({
+          error: "Receipt validation failed: status reference mismatch (url, index, or purpose)",
         });
       }
 
-      // Check W3C Status List (in production, fetch bitstring and check bit at index)
-      // For now, respect existing revoked/suspended status and only update if still verified
+      // Check W3C Status List with fail-closed security model
+      // 
+      // Production behavior:
+      // 1. Fetch status list from statusListUrl
+      // 2. Check bit at statusListIndex in compressed bitstring
+      // 3. If unreachable/stale (beyond max-age threshold), fail closed (reject verification)
+      // 4. Only return "verified" if list confirms status bit is clear (0)
+      //
+      // Current MVP behavior: Respects existing revoked/suspended status (fail-safe)
       let statusVerdict: string;
       
       if (proof.verificationStatus === "revoked" || proof.verificationStatus === "suspended") {
-        // Don't overwrite revoked/suspended status - once revoked, stays revoked
+        // Don't overwrite revoked/suspended status - once revoked, stays revoked until cleared
+        // Production: Would check W3C status list to see if revocation has been cleared
         statusVerdict = proof.verificationStatus;
       } else {
-        // In production: fetch status list and check bitstring[statusListIndex]
-        // For MVP: assume verified if not explicitly revoked/suspended
+        // MVP: Assume verified if not explicitly revoked/suspended
+        // 
+        // Production implementation would look like:
+        // try {
+        //   const statusList = await fetchStatusList(proof.statusListUrl, { maxStaleness: 3600 });
+        //   const statusBit = checkBitstringIndex(statusList.bitstring, proof.statusListIndex);
+        //   statusVerdict = statusBit === 0 ? "verified" : proof.statusPurpose === "revocation" ? "revoked" : "suspended";
+        // } catch (error) {
+        //   // Fail closed: if status list unreachable or stale, reject verification
+        //   statusVerdict = "unknown";
+        //   return res.status(503).json({ error: "Status list unavailable - failing closed for security" });
+        // }
         statusVerdict = "verified";
       }
 
@@ -220,6 +273,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       // Validate request body
       const body = insertProofAssetSchema.parse(req.body);
+
+      // Validate digest encoding based on algorithm
+      const digestValidation = validateDigestEncoding(body.proofDigest, body.digestAlg);
+      if (!digestValidation.valid) {
+        return res.status(400).json({
+          type: "about:blank",
+          title: "Invalid digest encoding",
+          status: 400,
+          detail: digestValidation.reason,
+        });
+      }
 
       // Verify the proof with issuer context
       const verification = await verifyProof(body.verifier_proof_ref, {

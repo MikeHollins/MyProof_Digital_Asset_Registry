@@ -318,7 +318,8 @@ export async function verifyReceipt(
  */
 function cleanupReplayCache(): void {
   const now = Date.now();
-  for (const [jti, expiry] of replayCache.entries()) {
+  const entries = Array.from(replayCache.entries());
+  for (const [jti, expiry] of entries) {
     if (now > expiry) {
       replayCache.delete(jti);
     }
