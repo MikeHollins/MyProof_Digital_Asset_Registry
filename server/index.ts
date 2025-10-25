@@ -199,4 +199,24 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   server.listen(PORT, "0.0.0.0", () => {
     log(`[express] serving on port ${PORT}`);
   });
+
+  // Background cleanup task: Remove expired JTI entries every 5 minutes
+  // This prevents unbounded growth of the jti_replay table
+  const { cleanupExpiredJti } = await import("./services/jti-repo");
+  
+  // Run cleanup immediately on startup
+  cleanupExpiredJti().catch(err => {
+    console.error('[jti-cleanup] Initial cleanup failed:', err);
+  });
+  
+  // Schedule periodic cleanup
+  setInterval(async () => {
+    try {
+      await cleanupExpiredJti();
+    } catch (err) {
+      console.error('[jti-cleanup] Periodic cleanup failed:', err);
+    }
+  }, 5 * 60 * 1000); // Every 5 minutes
+  
+  log('[jti-cleanup] Background JTI cleanup task started (runs every 5 minutes)');
 })();
