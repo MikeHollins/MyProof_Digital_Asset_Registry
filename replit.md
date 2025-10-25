@@ -120,8 +120,14 @@ Preferred communication style: Simple, everyday language.
 - OpenTelemetry Collectors
 
 **Environment Variables**:
-- `DATABASE_URL`
-- `NODE_ENV`
-- `STATUS_BASE_URL`
-- `RECEIPT_VERIFIER_PUBLIC_JWK`
-- `RECEIPT_VERIFIER_PRIVATE_JWK`
+- `DATABASE_URL` - PostgreSQL connection string (auto-configured in Replit)
+- `NODE_ENV` - Environment mode (development/production)
+- `STATUS_BASE_URL` - Base URL for W3C Status Lists
+- `STATUS_MAX_STALENESS_MS` - Max age for cached status lists (default: 24h)
+- `STATUS_FETCH_TIMEOUT_MS` - Timeout for status list fetches (default: 3s)
+- `REDIS_URL` - Optional Redis URL for replay cache (uses in-memory if not set)
+- `RECEIPT_VERIFIER_PUBLIC_JWK` - Public JWK for receipt verification (ES256)
+- `RECEIPT_VERIFIER_PRIVATE_JWK` - Private JWK for receipt signing (ES256, dev only)
+- `PROOF_MAX_SIZE_BYTES` - Max proof payload size (default: 128KB)
+- `PROOF_FETCH_TIMEOUT_MS` - Timeout for proof fetches (default: 3s)
+- `PROOF_ALLOWED_HOSTS` - Comma-separated allowlist for proof URIs (production)
