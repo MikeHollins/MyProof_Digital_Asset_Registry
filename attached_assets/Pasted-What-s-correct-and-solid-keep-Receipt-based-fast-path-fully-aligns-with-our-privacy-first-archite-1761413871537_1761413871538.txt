@@ -1,0 +1,128 @@
+What’s correct and solid (keep)
+
+Receipt-based fast path fully aligns with our privacy-first architecture: verify receipt signature → match proof_digest/policy_hash/constraint_hash → check status bit → done.
+
+Revocation/suspension never overwritten during re-verify (prevents “reactivate by re-verify”).
+
+No full JWS storage by default (minimizes breach blast radius and keeps you GDPR-clean).
+
+Abstraction via verifier_proof_ref means you can support ZK, JWS/LD-Proof, HW attestation, Merkle, blockchain proofs without schema churn.
+
+Corrections / tightenings to apply (surgical)
+
+These are small code/doc changes that materially raise security and audit quality.
+
+Bind the entire status pointer
+
+You already match statusListUrl + statusListIndex. Also match statusPurpose and normalize URL (scheme/host/port) before comparing. Reject on any mismatch.
+
+JWT strictness
+
+Enforce aud required (your registry DID/domain).
+
+Enforce both nbf and exp with a bounded clock-skew (e.g., ±60s).
+
+Require a jti (unique ID) and keep a short-TTL replay cache (5–15 min) to stop burst replays during validity windows.
+
+Alg allow-list: accept only ES256 (and later EdDSA), reject anything else; disallow crit and alg: "none".
+
+Digest rigor
+
+Store digest algorithm next to proof_digest, validate length/encoding on ingest.
+
+On fresh-crypto path, recompute digest from supplied bytes and must match the receipt’s proof_digest before running the verifier.
+
+Fail-closed status
+
+If the W3C Status List cannot be fetched or is stale beyond threshold, return verdict: "rejected" (or unknown) — not “verified”.
+
+Implement ETag + If-None-Match caching and define max staleness (e.g., 24h prod; 1h high-risk policies).
+
+Key handling (docs tweak)
+
+In Registry env: verification-only with VERIFIER_JWKS_URL (public JWKS).
+
+Never log private keys; if dev keys are auto-generated, ensure dev-only behavior and suppress private material from logs.
+
+Policy-gated freshness
+
+Wire requiresFreshProof(policy_hash) to a real policy store (by CID).
+
+Consider “time since last verify” policy (e.g., >30 days → fresh proof required).
+
+Fresh path must discard proof bytes after verification (no persistence).
+
+Telemetry privacy
+
+Redact tokens/receipts from logs. Log only opaque ids (proof_asset_id), policy_hash, constraint_hash, statusVerdict, and trace_id.
+
+Repo hygiene & structure recommendations
+
+If any of these aren’t yet committed, I recommend moving them from “attached_assets” into proper code paths.
+
+Backend folder skeleton
+
+backend/
+  openapi/par-api.yaml            # source of truth for API
+  src/
+    server.ts
+    routes/{proof-assets.ts,status.ts,reverify.ts}
+    services/{receipt.ts,policy.ts,proofVerifier/*,statusList.ts,transparencyLog.ts}
+    plugins/{security.ts,idempotency.ts,canonicalize.ts,cid.ts,observability.ts}
+    utils/{sri.ts}
+    tests/{canonicalization.spec.ts,statuslist.spec.ts,reverify.spec.ts}
+  .env.example
+  package.json
+  tsconfig.json
+
+
+Docs
+
+docs/
+  partner-onboarding.md
+  client-integration.md
+  audit-model.md
+  DPIA-template.md
+  ROPA-register.md
+
+
+Environment vars (Registry)
+
+PORT=8080
+VERIFIER_JWKS_URL=https://<your-verifier>/.well-known/jwks.json
+STATUS_BASE_URL=https://status.myproof.ai/lists
+READ_DB_URL=...
+DATABASE_URL=...
+REDIS_URL=...
+
+Tests you should see/commit
+
+Receipt substitution: mismatch in statusListUrl / statusListIndex / statusPurpose → reject.
+
+Revoked stays revoked: any re-verify on revoked/suspended → remains blocked.
+
+JWT rejections: missing/invalid aud, expired exp, not-yet-valid nbf, unrecognized alg, missing jti.
+
+Status fail-closed: simulate status fetch outage → rejected/unknown.
+
+Fresh path SRI: proof_uri fetch where digest ≠ proof_digest → reject before verifier runs.
+
+Canonicalization stability: identical JSON with different key order → same commitment digest.
+
+Quick wins I can ship next
+
+A /reverify unit test file covering all branches above.
+
+A status list client with ETag handling and staleness thresholds.
+
+A policy store (by policy_cid) with a flag requireFreshProof + time windows.
+
+A one-pager “Partner Conformance Suite” (10 JSON examples) so partners can self-test receipts & status.
+
+Bottom line
+
+✅ Your repo is visible and correctly targeted for MyProof Registry.
+
+✅ The receipt-based approach and the two security fixes are correct and strong.
+
+🔒 Apply the tightenings above (aud/nbf/exp/jti, statusPurpose compare, SRI, fail-closed status, no private key logging) to hit A-grade security and regulator-friendly posture.

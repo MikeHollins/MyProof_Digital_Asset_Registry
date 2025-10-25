@@ -1,0 +1,319 @@
+Love the detailed evidence — thanks for dropping real code. Net/net: your implementation is **much stronger than a “placeholder” stage**. You’ve already shipped most of the hard stuff:
+
+* ✅ Receipt-based re-verification (JOSE, alg allow-list, typ check, crit reject, `aud/exp/nbf`, `jti` replay cache)
+* ✅ Triple-binding of status (`url + index + purpose`) with URL normalization
+* ✅ Canonicalization + digest/alg persistence
+* ✅ Helmet + rate limiting + privacy-first log redaction
+* ✅ React app with multiple screens
+* ✅ Drizzle schema for assets / audit / status lists
+
+Below is a **surgical, in-depth review** with **patch-level improvements** to make it **demo-ready** for verifiers/clients/partners and even safer/scalable. I’ve grouped by area and included drop-in snippets.
+
+---
+
+## 1) Express server: secure-by-default hardening
+
+### A) JSON parsing & body size caps
+
+**Why:** prevent DoS and over-large proofs in fresh-path.
+
+```ts
+// server/index.ts
+app.disable('x-powered-by');
+app.set('trust proxy', 1); // if behind a proxy/edge
+
+app.use(express.json({
+  limit: '64kb',        // cap request bodies
+  strict: true,
+  type: ['application/json']
+}));
+
+// Optionally cap form bodies if used:
+app.use(express.urlencoded({ extended: false, limit: '32kb' }));
+```
+
+### B) Rate-limit keying by DID (not only IP)
+
+**Why:** fair and more private than IP.
+
+```ts
+const limiter = rateLimit({
+  windowMs: 60_000,
+  max: 300,
+  keyGenerator: (req) =>
+    (req.headers['x-did'] as string) ||
+    (req.headers['x-client-id'] as string) ||
+    req.ip
+});
+app.use(limiter);
+```
+
+### C) Helmet CSP without `'unsafe-inline'`
+
+**Why:** use per-request nonce to remove inline allowance.
+
+```ts
+app.use((req, res, next) => {
+  const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
+  res.locals.cspNonce = nonce;
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", `'nonce-${nonce}'`],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'none'"],
+        upgradeInsecureRequests: []
+      }
+    },
+    hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+    referrerPolicy: { policy: 'no-referrer' },
+    crossOriginEmbedderPolicy: true,
+    crossOriginOpenerPolicy: { policy: 'same-origin' },
+    crossOriginResourcePolicy: { policy: 'same-origin' }
+  })(req, res, next);
+});
+```
+
+> In your React templates, add `nonce={res.locals.cspNonce}` on `<script>` tags or avoid inline scripts altogether.
+
+### D) Centralized error handler (uniform problem+json)
+
+```ts
+app.use((err:any, _req, res:Response, _next:NextFunction) => {
+  const status = Number(err.status || 500);
+  const body = {
+    type: 'about:blank',
+    title: err.title || 'Internal Error',
+    status,
+    detail: process.env.NODE_ENV === 'production' ? undefined : String(err.stack || err)
+  };
+  res.status(status).type('application/problem+json').send(body);
+});
+```
+
+---
+
+## 2) Receipt service: tighten a few edges
+
+### A) Header decoding order
+
+If you’re checking `header.alg` **before** `jwtVerify`, ensure you’re using `decodeProtectedHeader` (safe):
+
+```ts
+import { decodeProtectedHeader } from 'jose';
+
+const { alg, typ, crit, kid } = decodeProtectedHeader(receipt) || {};
+if (!alg || !ALLOWED_ALGORITHMS.includes(alg as any)) return { ok:false, reason:'alg_not_allowed' };
+if (typ !== REQUIRED_HEADER_TYP) return { ok:false, reason:'typ_invalid' };
+if (crit && Array.isArray(crit) && crit.length) return { ok:false, reason:'crit_not_supported' };
+if (!kid) return { ok:false, reason:'kid_required' };
+
+// now do jwtVerify with JWKS, audience, clockTolerance
+```
+
+### B) Replay cache → Redis
+
+Map is fine for MVP, but use Redis for durability across restarts:
+
+```ts
+// receipt-service.ts
+import Redis from 'ioredis';
+const redis = new Redis(process.env.REDIS_URL!);
+
+async function isReplayed(jti:string): Promise<boolean> {
+  const key = `replay:${jti}`;
+  const ok = await redis.set(key, '1', 'NX', 'PX', 10 * 60 * 1000); // 10m TTL
+  return ok !== 'OK';
+}
+```
+
+---
+
+## 3) Status list: fail-closed + caching
+
+### A) Normalization + triple-match (you’re doing this, keep it)
+
+Add **default port stripping** (80/443), punycode normalization, and path canonicalization.
+
+```ts
+function normalizeUrl(u:string): string {
+  const url = new URL(u);
+  url.protocol = url.protocol.toLowerCase();
+  url.hostname = url.hostname.toLowerCase();
+  if ((url.protocol === 'https:' && url.port === '443') || (url.protocol === 'http:' && url.port === '80')) {
+    url.port = '';
+  }
+  if (url.pathname.endsWith('/') && url.pathname !== '/') url.pathname = url.pathname.slice(0, -1);
+  return url.toString();
+}
+```
+
+### B) Client with `ETag` and max staleness
+
+```ts
+const cache = new Map<string, { etag?:string; body:Uint8Array; ts:number }>();
+const MAX_STALENESS_MS = 24 * 60 * 60 * 1000;
+
+async function fetchStatusList(url:string) {
+  const cached = cache.get(url);
+  const headers:any = {};
+  if (cached?.etag) headers['If-None-Match'] = cached.etag;
+
+  const ctl = new AbortController();
+  const to = setTimeout(()=>ctl.abort(), 3000);
+  try {
+    const res = await fetch(url, { headers, signal: ctl.signal });
+    if (res.status === 304 && cached) return cached;
+    if (!res.ok) throw new Error(String(res.status));
+    const body = new Uint8Array(await res.arrayBuffer());
+    const etag = res.headers.get('ETag') || undefined;
+    const item = { etag, body, ts: Date.now() };
+    cache.set(url, item);
+    return item;
+  } finally { clearTimeout(to); }
+}
+
+function failClosedIfStale(url:string) {
+  const item = cache.get(url);
+  if (!item) return true; // no cache → closed
+  return (Date.now() - item.ts) > MAX_STALENESS_MS;
+}
+```
+
+In your re-verify route: if fetch fails or `failClosedIfStale(url)` → return `verdict:"rejected"` (or `unknown` if you want tri-state).
+
+---
+
+## 4) Fresh-proof path: SRI + size & time guards
+
+You already do allow-list + digest pin. Add **timeout, size cap, streaming hash** and reject non-HTTPS:
+
+```ts
+export async function fetchProofWithSRI(proofUri:string, expectedDigestB64Url:string): Promise<Uint8Array> {
+  const MAX_BYTES = 128 * 1024; // 128KB cap; adjust as needed
+  const u = new URL(proofUri);
+  if (u.protocol !== 'https:') throw new Error('unsupported_scheme');
+  if (!ALLOW_HTTPS_HOSTS.has(u.host)) throw new Error('origin_not_allowlisted');
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+
+  try {
+    const res = await fetch(proofUri, { signal: controller.signal });
+    if (!res.ok) throw new Error(`fetch_failed_${res.status}`);
+
+    const reader = res.body!.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_BYTES) throw new Error('payload_too_large');
+      chunks.push(value);
+    }
+    const bytes = Buffer.concat(chunks.map(c => Buffer.from(c)));
+    const digest = Buffer.from(crypto.createHash('sha256').update(bytes).digest()).toString('base64url');
+    if (digest !== expectedDigestB64Url) throw new Error('sri_digest_mismatch');
+    return new Uint8Array(bytes);
+  } finally { clearTimeout(timer); }
+}
+```
+
+---
+
+## 5) Digest + canonicalization consistency
+
+You validate **hex** digests; earlier flows sometimes used **base64url**. Pick **one canonical encoding** for digests everywhere (recommend **base64url** for JOSE friendliness), and **document it** in your OpenAPI and receipts. If you keep hex:
+
+* validate `^[0-9a-f]{64}$` (lowercase),
+* normalize to lowercase on ingest,
+* in receipts, **always** emit hex, not mixed encodings.
+
+---
+
+## 6) Key management & roles separation
+
+You already guard production w/ env checks. One improvement:
+
+* **Registry** (this repo) should **verify** receipts only → needs **`VERIFIER_JWKS_URL`**.
+* **Verifier service** (separate service) should **sign** receipts with KMS/HSM.
+* If both live here for demo, **explicitly tag “DEMO SIGNER”** paths and block them when `NODE_ENV=production`.
+
+---
+
+## 7) Database & status list storage
+
+Your Drizzle tables look good; consider:
+
+* **proof_assets**: add `created_at TIMESTAMPTZ default now()`, `updated_at` trigger; unique index on `proof_asset_commitment`.
+* **status_lists** table (if you persist lists): store **compressed bitstring** (`bytea` gz) + `etag` + `last_fetched_at`; but in prod a CDN URL is better than DB rows.
+* **audit_events**: add `leaf_hash BYTEA`, `sct_signature BYTEA` (for signed Merkle root model); a tiny `merkle_snapshots` table helps external auditors.
+
+---
+
+## 8) Front-end: wire everything, no placeholders
+
+Given your React pages are defined:
+
+* **Verification page** should POST `/api/proof-assets/:id/verify` and `/reverify` as appropriate; render `verdict` with color states: green (valid), amber (unknown), red (revoked/suspended/expired/rejected).
+* **Status Lists** page: batch update with JSON ops; show returned `ETag`.
+* **Proofs** page: show `proof_asset_commitment`, `policy_hash`, `constraint_hash`, `status_ref` triple, `created_at`.
+* **Audit Logs** page: list last 50 events; “Export inclusion proof” stub for now.
+* **Settings**: show `VERIFIER_JWKS_URL`, CSP status, and whether demo-signer is enabled (dev only).
+
+**UI polish:**
+
+* Disable buttons during requests; show spinners; toast on success/fail.
+* WCAG: tab order, focus ring, proper labels, live regions for async results.
+
+---
+
+## 9) Tests to reach demo-safe
+
+* Receipt substitution (url/index/purpose mismatch → 400).
+* Revoked → remains revoked.
+* JWT strictness: missing `aud`, expired `exp`, future `nbf`, unknown `alg`, missing `jti`.
+* Status fail-closed (network error or staleness) returns `rejected`/`unknown`.
+* Fresh path SRI mismatch → reject **before** verification.
+* Canonicalization: same digest for permuted JSON.
+
+---
+
+## 10) Partner/Client docs (quick win)
+
+Add `/docs/partner-onboarding.md` and `/docs/client-integration.md`:
+
+* **Partner**: OIDC, scopes, posting receipts, status verification, conformance tests.
+* **Client**: how to call `/reverify`, interpret verdicts, UX/PII guidelines.
+* **Audit**: how to get transparency snapshots and validate Merkle roots.
+
+---
+
+## 11) Prioritized punch-list (to ship demo)
+
+1. ✅ Keep your route and JOSE strictness (already excellent).
+2. ⛏️ Replace in-memory replay cache with **Redis**.
+3. ⛏️ Add **status client** with `ETag` + **fail-closed** policy.
+4. ⛏️ Enforce **body size caps**; SRI fetcher **timeout & size cap**.
+5. ⛏️ Upgrade CSP to **nonce-based**, remove `'unsafe-inline'`.
+6. ⛏️ Normalize digest encoding across all components (pick base64url or hex).
+7. ⛏️ Add **tests** listed above.
+8. ⛏️ Wire React screens fully (remove any lingering placeholders), add spinners/toasts.
+
+---
+
+### Final take
+
+Your codebase is **already production-class in its security posture** — especially the receipt service. With the small hardening steps above (Redis replay cache, fail-closed status, strict CSP w/ nonce, size/time caps on proof fetch, consistent digest encoding), you’ll be **demo-ready** for verifiers, clients, and partners while keeping the **privacy-first** promise and a **lightweight, scalable** architecture.
+
+If you’d like, I can draft the PR with:
+
+* the Redis replay cache,
+* status list client w/ ETag + fail-closed,
+* CSP nonce middleware,
+* SRI fetcher w/ size cap & timeout,
+* and the test suite stubs.

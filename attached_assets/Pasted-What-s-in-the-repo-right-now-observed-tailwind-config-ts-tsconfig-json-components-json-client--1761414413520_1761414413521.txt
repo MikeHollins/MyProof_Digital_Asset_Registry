@@ -1,0 +1,291 @@
+What’s in the repo right now (observed)
+
+tailwind.config.ts, tsconfig.json, components.json
+
+client/index.html (front‑end scaffold)
+
+server/vite.ts (dev tooling)
+
+/attached_assets/… text artifacts that include our Engineering Master Prompt and the receipt‑based re‑verification design (i.e., the design we want implemented)
+
+Missing / not yet committed (based on our plan):
+
+Backend Fastify code (/backend/src/...), OpenAPI (openapi/par-api.yaml), routes (proof-assets.ts, reverify.ts, status.ts), plugins (security.ts, idempotency.ts, canonicalize.ts, cid.ts, observability.ts), services (receipt.ts, policy.ts, statusList.ts, transparencyLog.ts, proofVerifier/*), and DB layer.
+
+Partner docs (/docs/*) beyond attached assets.
+
+Front‑end pages/components for mint, reverify, status manager, audit explorer (unless they live inside client/index.html as placeholders).
+
+Conclusion: you have the UI skeleton + configs and the attached design materials, but the core backend and wired UI actions aren’t fully committed yet.
+
+Action plan — in‑depth eval + concrete fixes to get demo‑ready
+
+Below is a precise, ordered checklist with code you can paste. Where I reference files that aren’t present, I include the minimal versions so you can add them directly.
+
+1) Create the backend API (privacy‑first, secure defaults)
+
+Add folder:
+
+backend/
+  openapi/par-api.yaml
+  package.json
+  tsconfig.json
+  .env.example
+  src/
+    server.ts
+    routes/{proof-assets.ts,reverify.ts,status.ts}
+    plugins/{security.ts,idempotency.ts,canonicalize.ts,cid.ts,observability.ts}
+    services/{receipt.ts,policy.ts,statusList.ts,transparencyLog.ts,proofVerifier/{index.ts,jws.ts,zkp.ts,hw.ts,merkle.ts}}
+    db/{schema.ts,migrate.ts}
+    utils/{sri.ts}
+    tests/{canonicalization.spec.ts,statuslist.spec.ts,reverify.spec.ts}
+
+
+Why
+
+Keeps zero‑PII invariant: we persist only DIDs, hashes, commitments, CIDs, and status pointers.
+
+Re‑verification uses receipt fast‑path; fresh‑proof path is policy‑gated, using SRI‑pinned proof fetch (no storage of proof bytes).
+
+Status checks via W3C Bitstring Status List; fail‑closed on outages.
+
+I won’t re‑paste all backend code here (we already produced it for you). If you want, I can restate any file verbatim. Key files to ensure are committed:
+
+routes/reverify.ts, services/receipt.ts, utils/sri.ts (the safe re‑verify flow)
+
+plugins/security.ts (CSP/HSTS + response Digest header)
+
+plugins/idempotency.ts (Idempotency‑Key on POST)
+
+plugins/canonicalize.ts (RFC 8785 JCS commitment)
+
+services/statusList.ts (bit ops)
+
+db/schema.ts (Postgres schema with unique commitment index)
+
+Critical tightenings to apply when you paste code:
+
+JWT strictness: require aud, validate nbf & exp with small skew; add jti replay cache; alg allow‑list (ES256 now; EdDSA later).
+
+Bind status pointer fully: compare statusListUrl, statusListIndex, and statusPurpose (normalize URL).
+
+Fail‑closed on status errors; use ETag/If-None-Match caching for lists.
+
+Fresh path: recompute digest from bytes and must match receipt proof_digest before verifying.
+
+Never log secrets/private keys; prod registry verifies receipts against public VERIFIER_JWKS_URL only.
+
+Quick start (once committed):
+
+cd backend
+cp .env.example .env
+pnpm i
+pnpm migrate
+pnpm dev
+
+2) Wire the existing client/index.html (remove placeholders)
+
+Assuming your client/index.html currently has “Mint”, “Re-Verify”, “Transfer”, and “Status Manager” placeholder buttons, wire them like this (vanilla JS; secure fetch; clear UX states):
+
+<!-- client/index.html (snippet) -->
+<main class="p-6 space-y-6">
+  <section>
+    <h2 class="text-xl font-bold">Mint Proof Asset</h2>
+    <form id="mintForm" class="space-y-2">
+      <input id="issuer_did" placeholder="issuer DID (e.g., did:example:issuer)" class="border p-2 w-full" />
+      <input id="policy_cid" placeholder="policy CID (cid:...)" class="border p-2 w-full" />
+      <input id="policy_hash" placeholder="policy hash (base64url)" class="border p-2 w-full" />
+      <input id="constraint_hash" placeholder="constraint hash (base64url)" class="border p-2 w-full" />
+      <button id="btnMint" type="submit" class="bg-black text-white px-4 py-2 rounded">Mint</button>
+    </form>
+    <pre id="mintResult" class="bg-gray-100 p-2 mt-2"></pre>
+  </section>
+
+  <section>
+    <h2 class="text-xl font-bold">Re-Verify</h2>
+    <form id="reverifyForm" class="space-y-2">
+      <input id="receipt" placeholder="compact JWS receipt" class="border p-2 w-full" />
+      <input id="audience" placeholder="audience (e.g., myproof-registry)" class="border p-2 w-full" />
+      <input id="nonce" placeholder="nonce" class="border p-2 w-full" />
+      <label class="flex items-center gap-2"><input id="fresh" type="checkbox"/> Require fresh proof</label>
+      <input id="proof_uri" placeholder="proof_uri (https://... or cid:...)" class="border p-2 w-full" />
+      <textarea id="proof_bytes" placeholder="proof bytes (base64url)" class="border p-2 w-full"></textarea>
+      <button id="btnReverify" class="bg-black text-white px-4 py-2 rounded">Re-Verify</button>
+    </form>
+    <pre id="reverifyResult" class="bg-gray-100 p-2 mt-2"></pre>
+  </section>
+
+  <section>
+    <h2 class="text-xl font-bold">Status Manager</h2>
+    <form id="statusForm" class="space-y-2">
+      <input id="statusUrl" placeholder="status list URL" class="border p-2 w-full"/>
+      <input id="statusOps" placeholder='ops JSON e.g., [{"op":"set","index":"284109"}]' class="border p-2 w-full"/>
+      <button id="btnStatus" class="bg-black text-white px-4 py-2 rounded">Update Status</button>
+    </form>
+    <pre id="statusResult" class="bg-gray-100 p-2 mt-2"></pre>
+  </section>
+</main>
+
+<script>
+const API = 'http://localhost:8080'; // backend dev URL
+
+const show = (el, data) => el.textContent = JSON.stringify(data, null, 2);
+const on = (sel, evt, fn) => document.querySelector(sel).addEventListener(evt, fn);
+
+on('#mintForm', 'submit', async (e) => {
+  e.preventDefault();
+  const issuer_did = document.querySelector('#issuer_did').value.trim();
+  const policy_cid = document.querySelector('#policy_cid').value.trim();
+  const policy_hash = document.querySelector('#policy_hash').value.trim();
+  const constraint_hash = document.querySelector('#constraint_hash').value.trim();
+  const resEl = document.querySelector('#mintResult');
+  try {
+    const r = await fetch(`${API}/proof-assets`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','Idempotency-Key': crypto.randomUUID()},
+      body: JSON.stringify({
+        issuer_did,
+        verifier_proof_ref: { proof_format:'JWS', proof_digest:'Zm9v', digest_alg:'sha2-256', proof_uri:'data:application/jws,...' },
+        policy_cid, policy_hash, constraint_hash
+      })
+    });
+    const data = await r.json();
+    show(resEl, { status: r.status, data });
+  } catch (err) { show(resEl, { error: String(err) }); }
+});
+
+on('#btnReverify', 'click', async (e) => {
+  e.preventDefault();
+  const receipt = document.querySelector('#receipt').value.trim();
+  const audience = document.querySelector('#audience').value.trim();
+  const nonce = document.querySelector('#nonce').value.trim();
+  const requireFreshProof = document.querySelector('#fresh').checked;
+  const proof_uri = document.querySelector('#proof_uri').value.trim() || undefined;
+  const proof_bytes = document.querySelector('#proof_bytes').value.trim() || undefined;
+  const resEl = document.querySelector('#reverifyResult');
+  try {
+    const r = await fetch(`${API}/reverify`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ receipt, audience, nonce, requireFreshProof, proof_uri, proof_bytes })
+    });
+    const data = await r.json();
+    show(resEl, { status: r.status, data });
+  } catch (err) { show(resEl, { error: String(err) }); }
+});
+
+on('#btnStatus', 'click', async (e) => {
+  e.preventDefault();
+  const url = document.querySelector('#statusUrl').value.trim();
+  const opsRaw = document.querySelector('#statusOps').value.trim();
+  const resEl = document.querySelector('#statusResult');
+  try {
+    const operations = JSON.parse(opsRaw);
+    const purpose = url.includes('/suspension/') ? 'suspension' : 'revocation';
+    const r = await fetch(`${API}/status-lists/${purpose}/update`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ statusListUrl: url, operations })
+    });
+    const data = await r.json();
+    show(resEl, { status: r.status, data });
+  } catch (err) { show(resEl, { error: String(err) }); }
+});
+</script>
+
+
+Security notes for the front‑end
+
+For demo: calling http://localhost:8080 is fine. In production, the portal should be same‑origin as the API to avoid CORS risks and to use HttpOnly, Secure session cookies for OIDC.
+
+Enforce a strict CSP (already recommended in backend security.ts). For a static page, you can set a <meta http-equiv="Content-Security-Policy"> with default-src 'self'.
+
+3) Remove “placeholder” buttons elsewhere
+
+If you have any temporary buttons with onclick="console.log(...)" or links to #, convert them into forms or explicit event listeners as above and always:
+
+Validate inputs client‑side; show specific error text inline.
+
+Disable buttons while network requests are pending; show a spinner.
+
+Render the verdict prominently: valid / revoked / suspended / expired / rejected.
+
+4) Wire Status List properly
+
+On the backend, add a simple status list client that caches bitstrings by URL with ETag; define MAX_STALENESS_MS.
+
+On re‑verify:
+
+fetch the list (or use cached copy if fresh)
+
+read bit at statusListIndex
+
+if unreachable or stale beyond threshold → fail closed with verdict: "rejected" (or "unknown" if you prefer a tri‑state).
+
+5) Seed data & demo fixtures (verifiers → clients → partners)
+
+Add a script under backend/scripts/ to generate:
+
+A sample policy JSON → compute CID and hash.
+
+A sample receipt (compact JWS) with claims: proof_digest, policy_hash, constraint_hash, status_ref, aud, nbf, exp, jti.
+
+Create one status list with 0/1 entries to demo valid vs revoked.
+
+Provide a demo page (or section) in client/index.html where you paste the sample receipt to test re‑verification.
+
+6) Lock down the re-verify flow (defense‑in‑depth)
+
+Strict JOSE header checks: allow only alg in your allow‑list; reject crit or unknown params; require typ:"JWT".
+
+aud required; nbf, exp enforced with skew; jti replay cache (5–15 min TTL in Redis).
+
+Bind status pointer completely: url + index + purpose; normalize URL (scheme, host, port) before compare.
+
+Fresh path: recompute digest and match before invoking the proof verifier; no storage of proof payload; discard after verify.
+
+7) Observability & privacy
+
+Add OpenTelemetry middleware (we included a simple observability plugin).
+
+Never log raw receipts or proof data; log only opaque IDs, policy_hash, constraint_hash, statusVerdict, trace_id.
+
+Add a privacy linter (already stubbed) that scans OpenAPI & schema for forbidden fields: name, dob, email, address, ssn, etc.
+
+8) Unit tests to reach “demo‑safe”
+
+Create at least these (we can supply templates on request):
+
+Canonicalization stability (same commitment despite JSON key order).
+
+Receipt substitution (mismatched status url/index/purpose → reject).
+
+Revoked stays revoked during re‑verify.
+
+JWT strictness (aud missing, exp < now, nbf > now → reject; alg not in allow‑list → reject; missing jti → reject).
+
+Status fail‑closed (list fetch unreachable or stale → rejected/unknown).
+
+Fresh path SRI (proof_uri digest mismatch → reject before verification).
+
+9) Partner & client docs in /docs/
+
+partner-onboarding.md: OIDC registration, scopes, key pinning, conformance suite, incident reporting.
+
+client-integration.md: how to verify receipts, check status, and UX guidelines.
+
+audit-model.md: transparency log, Merkle roots, and how to request inclusion proof.
+
+DPIA-template.md, ROPA-register.md: prefilled with “no PII, only hashes/CIDs/DIDs”.
+
+Lightweight, scalable, secure defaults (recap)
+
+Fastify + Zod, Postgres (with unique index on proof_asset_commitment), Redis (idempotency & replay cache), OpenTelemetry, strict CSP.
+
+No proof payload storage; re-verify via signed receipt + status; fresh crypto only on policy demand (discard bytes).
+
+Status Lists: W3C bitstring, cached with ETag, fail‑closed if stale/unreachable.
+
+Idempotency on all POST; deterministic errors (400/403/409).
+
+Minimal code + deps → easy to run locally and scale horizontally later.
