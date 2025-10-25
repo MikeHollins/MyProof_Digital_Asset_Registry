@@ -56,7 +56,7 @@ interface DemoSeedResponse {
 }
 
 interface VerifyResponse {
-  ok: boolean;
+  success: boolean;
   assetId?: string;
   verificationStatus?: string;
   statusVerdict?: "valid" | "revoked" | "suspended";
@@ -137,10 +137,10 @@ export default function Demo() {
         setStep("verified_revoked");
         toast({
           title: "Second Verification Complete",
-          description: data.ok 
+          description: data.success 
             ? `Status: ${data.verificationStatus || "unknown"}`
             : `Verification failed (expected): ${data.error}`,
-          variant: data.ok ? "default" : "destructive",
+          variant: data.success ? "default" : "destructive",
         });
       }
     },
@@ -383,10 +383,10 @@ export default function Demo() {
                 <div className="space-y-3 pt-4 border-t">
                   <div className="flex items-center gap-2">
                     <Badge 
-                      variant={firstVerifyResult.ok ? "default" : "destructive"}
+                      variant={firstVerifyResult.success ? "default" : "destructive"}
                       data-testid="badge-verify-status"
                     >
-                      {firstVerifyResult.ok ? "✓ Verified" : "✗ Failed"}
+                      {firstVerifyResult.success ? "✓ Verified" : "✗ Failed"}
                     </Badge>
                     {firstVerifyResult.statusVerdict && (
                       <Badge variant="outline" data-testid="badge-status-verdict">
@@ -472,10 +472,10 @@ export default function Demo() {
                 <div className="space-y-3 pt-4 border-t">
                   <div className="flex items-center gap-2">
                     <Badge 
-                      variant={secondVerifyResult.ok ? "default" : "destructive"}
+                      variant={secondVerifyResult.success ? "default" : "destructive"}
                       data-testid="badge-verify-second-status"
                     >
-                      {secondVerifyResult.ok ? "✓ Verified" : "✗ Failed (Expected)"}
+                      {secondVerifyResult.success ? "✓ Verified" : "✗ Failed (Expected)"}
                     </Badge>
                     {secondVerifyResult.statusVerdict && (
                       <Badge variant="destructive" data-testid="badge-status-verdict-second">
@@ -484,7 +484,7 @@ export default function Demo() {
                     )}
                   </div>
                   <p className="text-sm text-gray-600">
-                    {secondVerifyResult.ok 
+                    {secondVerifyResult.success 
                       ? "⚠️ Unexpected: Verification should have failed"
                       : "✓ Fail-closed: Status check detected revocation"}
                   </p>
