@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "crypto";
 import { SignJWT, importJWK } from "jose";
 import { storage } from "./storage";
 import { getReceiptSigningKey } from "./routes";
+import { ensureList, applyOps, getCompressedBitstring } from "./services/status-list-repo";
 
 /**
  * Demo Routes for PAR Registry
@@ -10,25 +11,23 @@ import { getReceiptSigningKey } from "./routes";
  * Provides end-to-end demonstration of:
  * - Proof asset registration with receipt generation
  * - Receipt-based verification
- * - W3C Status List revocation
+ * - W3C Status List revocation (database-backed)
  * - Fail-closed re-verification
  * 
  * Security: Receipt signing only allowed in development mode
+ * Persistence: Status lists stored in PostgreSQL, survive server restarts
  */
 
 // Deterministic demo constants (PII-free)
 const DEMO = {
   assetId: "DEMO-ASSET-001",
-  statusListUrl: "http://localhost:5000/api/demo/status-list", // Local mock endpoint
+  statusListUrl: "http://localhost:5000/status/lists/revocation/demo-001", // Database-backed status list
   statusListIndex: "284109",
   statusPurpose: "revocation" as const,
   issuerDid: "did:example:demo-issuer",
   verifierDid: "did:example:demo-verifier",
   audience: "myproof-registry", // Must match expectedAudience in routes.ts
 };
-
-// In-memory status list state (for demo only)
-let demoStatusRevoked = false;
 
 // Helper: SHA-256 hex digest
 function hexDigest(input: string | Buffer): string {
@@ -106,7 +105,10 @@ export async function registerDemoRoutes(app: Express) {
       };
       const commitment = hexDigest(JSON.stringify(commitmentData));
 
-      // 4) Create or update proof asset (idempotent)
+      // 4) Ensure status list exists in database (survives restarts)
+      await ensureList(DEMO.statusListUrl, DEMO.statusPurpose);
+
+      // 5) Create or update proof asset (idempotent)
       // Note: Don't try to use custom IDs - let DB generate UUID
       let proofAsset;
       try {
@@ -157,7 +159,7 @@ export async function registerDemoRoutes(app: Express) {
         throw error;
       }
 
-      // 5) Generate signed receipt (dev-only)
+      // 6) Generate signed receipt (dev-only)
       const jwk = getDemoSigningKey();
       const privateKey = await importJWK(jwk, 'ES256');
 
@@ -187,12 +189,12 @@ export async function registerDemoRoutes(app: Express) {
         })
         .sign(privateKey);
 
-      // 6) Store the receipt in the proof asset (critical for receipt-based verification)
+      // 7) Store the receipt in the proof asset (critical for receipt-based verification)
       await storage.updateProofAsset(proofAsset.proofAssetId, {
         verifierProofRef: receipt,
       });
 
-      // 7) Generate cURL snippets for demo
+      // 8) Generate cURL snippets for demo
       const baseUrl = process.env.BASE_URL || "http://localhost:5000";
       
       const curlVerify = `curl -s -X POST ${baseUrl}/api/proof-assets/${proofAsset.proofAssetId}/verify \\
@@ -203,7 +205,7 @@ export async function registerDemoRoutes(app: Express) {
   -H 'Content-Type: application/json' \\
   -d '{}'`;
 
-      // 8) Return demo seed data
+      // 9) Return demo seed data
       return res.json({
         ok: true,
         demo: {
@@ -276,13 +278,18 @@ export async function registerDemoRoutes(app: Express) {
         });
       }
 
-      // Update status to revoked
+      // Ensure status list exists in database
+      await ensureList(DEMO.statusListUrl, DEMO.statusPurpose);
+
+      // Update database: set bit to 1 (revoked) in status list
+      const { etag } = await applyOps(DEMO.statusListUrl, [
+        { op: 'set', index: parseInt(DEMO.statusListIndex, 10) }
+      ]);
+
+      // Update status to revoked in proof asset
       const updated = await storage.updateProofAsset(proof.proofAssetId, {
         verificationStatus: "revoked",
       });
-
-      // Flip demo status bit
-      demoStatusRevoked = true;
 
       // Create audit event
       await storage.createAuditEvent({
@@ -349,14 +356,19 @@ export async function registerDemoRoutes(app: Express) {
         });
       }
 
-      // Reset status to verified
+      // Ensure status list exists in database
+      await ensureList(DEMO.statusListUrl, DEMO.statusPurpose);
+
+      // Update database: clear bit to 0 (valid) in status list
+      const { etag } = await applyOps(DEMO.statusListUrl, [
+        { op: 'clear', index: parseInt(DEMO.statusListIndex, 10) }
+      ]);
+
+      // Reset status to verified in proof asset
       await storage.updateProofAsset(proof.proofAssetId, {
         verificationStatus: "verified",
         verificationTimestamp: new Date(),
       });
-
-      // Clear demo status bit
-      demoStatusRevoked = false;
 
       // Create audit event
       await storage.createAuditEvent({
@@ -387,64 +399,11 @@ export async function registerDemoRoutes(app: Express) {
   });
 
   /**
-   * GET /api/demo/status-list
+   * GET /status/lists/revocation/demo-001
    * 
-   * Mock W3C Bitstring Status List endpoint for demo.
-   * Returns a compressed bitstring where index 284109 can be revoked/unrevoked.
+   * Serves W3C Bitstring Status List from PostgreSQL.
+   * Persists across server restarts.
+   * 
+   * Note: This endpoint is registered in server/index.ts to handle the /status prefix
    */
-  app.get("/api/demo/status-list", async (_req: Request, res: Response) => {
-    try {
-      // Create a bitstring with 131072 bits (16KB compressed)
-      const bitstringLength = 131072;
-      const byteLength = Math.ceil(bitstringLength / 8);
-      const bitstring = Buffer.alloc(byteLength, 0);
-
-      // Check if demo asset is revoked by querying the database
-      // This survives server restarts unlike the in-memory flag
-      const proofs = await storage.getProofAssets();
-      const demoProof = proofs.find(p => 
-        p.statusListUrl === DEMO.statusListUrl && 
-        p.statusListIndex === DEMO.statusListIndex
-      );
-      
-      const isRevoked = demoProof?.verificationStatus === "revoked";
-      
-      // Set bit 284109 if demo is revoked
-      if (isRevoked) {
-        const index = parseInt(DEMO.statusListIndex, 10);
-        const byteIndex = Math.floor(index / 8);
-        const bitIndex = index % 8;
-        bitstring[byteIndex] |= (1 << bitIndex);
-      }
-
-      // Compress using gzip
-      const zlib = await import('zlib');
-      const compressed = await new Promise<Buffer>((resolve, reject) => {
-        zlib.gzip(bitstring, (err, result) => {
-          if (err) reject(err);
-          else resolve(result);
-        });
-      });
-
-      // Return W3C Bitstring Status List format
-      return res.json({
-        "@context": ["https://www.w3.org/ns/credentials/v2"],
-        id: DEMO.statusListUrl,
-        type: "BitstringStatusListCredential",
-        credentialSubject: {
-          id: `${DEMO.statusListUrl}#list`,
-          type: "BitstringStatusList",
-          encodedList: compressed.toString('base64'),
-          statusPurpose: DEMO.statusPurpose,
-        },
-      });
-
-    } catch (error: any) {
-      console.error('[demo/status-list] Error:', error);
-      return res.status(500).json({ 
-        ok: false, 
-        error: error.message 
-      });
-    }
-  });
 }
