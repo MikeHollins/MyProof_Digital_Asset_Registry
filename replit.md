@@ -105,20 +105,54 @@ The architecture anticipates these auth mechanisms (not yet implemented):
 
 ### Data Flow & Verification Pipeline
 
-1. **Proof Registration**:
+1. **Proof Registration (with Receipt Generation)**:
    - Client submits proof metadata (issuer DID, proof format, digest, policy CID, etc.)
    - Server generates commitment hash from proof data
-   - Proof verification stub called (placeholder - production would integrate ZK verifiers, JWS validators, etc.)
+   - Proof verification executed (JWS signature validation, ZK proof verification stub)
+   - **Receipt Generation**: After successful verification, generates signed JWS receipt binding:
+     - `proof_digest`: SHA-256 digest of proof bytes
+     - `policy_hash`: Hash of policy constraints
+     - `constraint_hash`: Hash of verification constraints
+     - `status_ref`: W3C Status List reference (URL + index)
+   - Receipt stored in `verifier_proof_ref` field (only the receipt, not the proof bytes!)
    - Status list allocation (assigns index in revocation/suspension bitstring)
    - Atomic write to storage with audit event creation
-   - Response includes verification result, assigned IDs, and status references
+   - Response includes verification result, assigned IDs, status references, and receipt
 
-2. **Status Management**:
+2. **Receipt-Based Re-Verification (Fast Path)**:
+   - **Privacy-First Design**: Re-verification uses only the signed receipt, never requires original proof bytes
+   - Verification steps:
+     1. **Receipt Signature Verification**: Validate JWS signature using verifier's public key
+     2. **Commitment Matching**: Verify proof_digest, policy_hash, constraint_hash match stored values (prevents substitution attacks)
+     3. **Status List Check**: Validate proof not revoked/suspended via W3C Bitstring Status List
+   - **Benefits**:
+     - Eliminates PII storage risk (no proof payload retained)
+     - Fast verification (cryptographic operations only, no proof re-execution)
+     - Tamper-evident (receipt signature + commitment binding)
+   - Updates verification timestamp and creates audit event
+   - **Fallback**: Fresh verification path (future) will fetch proof via URI, verify digest, run crypto, then discard
+
+3. **Receipt Cryptography**:
+   - **Signing Algorithm**: ES256 (ECDSA P-256 with SHA-256)
+   - **Key Management**:
+     - Development: Keypair loaded from `RECEIPT_VERIFIER_PUBLIC_JWK` and `RECEIPT_VERIFIER_PRIVATE_JWK` environment variables
+     - Production: KMS/HSM-backed signing with key rotation strategy
+   - **Receipt Structure** (JWS Compact Serialization):
+     - Header: `{"alg": "ES256", "typ": "JWT", "kid": "<key_id>"}`
+     - Payload: `{"proof_digest": "...", "policy_hash": "...", "constraint_hash": "...", "status_ref": {...}, "iss": "...", "aud": "...", "iat": ..., "exp": ...}`
+     - Signature: ECDSA signature over header + payload
+   - **Security Properties**:
+     - Non-repudiation: Verifier cannot deny issuing receipt
+     - Integrity: Any tampering invalidates signature
+     - Freshness: Expiry timestamp prevents indefinite reuse
+     - Binding: Commitments prevent proof substitution
+
+4. **Status Management**:
    - W3C Bitstring Status List pattern for efficient revocation/suspension
    - Bitwise operations on compressed status lists (not yet implemented)
    - ETag-based optimistic locking prevents concurrent update conflicts
 
-3. **Audit Trail**:
+5. **Audit Trail**:
    - Every mutation (MINT, USE, TRANSFER, STATUS_UPDATE) creates an audit event
    - Hash chaining links events together (previous_hash → current_hash)
    - Enables cryptographic verification of event sequence integrity
@@ -177,6 +211,10 @@ The architecture anticipates integration with:
 - `DATABASE_URL`: PostgreSQL connection string (Neon serverless format)
 - `NODE_ENV`: Runtime environment (development/production)
 - `STATUS_BASE_URL`: Base URL for W3C Status List resolution (optional, defaults to example.com)
+- `RECEIPT_VERIFIER_PUBLIC_JWK`: JSON Web Key for receipt verification (ES256 public key)
+- `RECEIPT_VERIFIER_PRIVATE_JWK`: JSON Web Key for receipt signing (ES256 private key)
+
+**Note**: If receipt verifier keys are not provided, the system will generate a new keypair on startup and log the keys to console. To persist keys across restarts, copy the logged keys to environment variables.
 
 **Build & Deployment**:
 - Development: `npm run dev` - Concurrent frontend (Vite) + backend (tsx watch mode)

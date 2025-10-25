@@ -7,6 +7,9 @@ import { createHash } from "crypto";
 
 const app = express();
 
+// Trust proxy - Replit runs behind a reverse proxy
+app.set('trust proxy', 1);
+
 // Security headers with Helmet
 app.use(helmet({
   contentSecurityPolicy: {

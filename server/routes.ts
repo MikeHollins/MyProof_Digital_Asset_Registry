@@ -150,9 +150,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Check W3C Status List (stub - in production, fetch bitstring and check bit at index)
-      // For now, we assume status is valid unless explicitly revoked
-      const statusVerdict = "verified"; // In production: check bitstring[claims.status_ref.statusListIndex]
+      // Validate status reference matches (prevent receipt substitution from different proof)
+      if (claims.status_ref.statusListUrl !== proof.statusListUrl || 
+          claims.status_ref.statusListIndex !== proof.statusListIndex) {
+        return res.status(400).json({
+          error: "Receipt validation failed: status reference mismatch",
+        });
+      }
+
+      // Check W3C Status List (in production, fetch bitstring and check bit at index)
+      // For now, respect existing revoked/suspended status and only update if still verified
+      let statusVerdict: string;
+      
+      if (proof.verificationStatus === "revoked" || proof.verificationStatus === "suspended") {
+        // Don't overwrite revoked/suspended status - once revoked, stays revoked
+        statusVerdict = proof.verificationStatus;
+      } else {
+        // In production: fetch status list and check bitstring[statusListIndex]
+        // For MVP: assume verified if not explicitly revoked/suspended
+        statusVerdict = "verified";
+      }
 
       // Update verification timestamp (proof is still valid based on receipt)
       const updatedProof = await storage.updateProofAsset(proof.proofAssetId, {
