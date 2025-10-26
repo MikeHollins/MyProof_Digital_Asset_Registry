@@ -183,6 +183,10 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   // Register admin API key management routes
   const { registerAdminApiKeys } = await import("./routes-admin-apikeys");
   registerAdminApiKeys(app);
+  
+  // Register admin ping route (dev only)
+  const { registerAdminPing } = await import("./routes-admin-ping");
+  registerAdminPing(app);
 
   // Error handling middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

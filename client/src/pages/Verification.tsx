@@ -44,9 +44,10 @@ export default function Verification() {
 
   const registerMutation = useMutation({
     mutationFn: async (data: InsertProofAsset) => {
-      return await apiRequest("POST", "/api/proof-assets", data);
+      const response = await apiRequest("POST", "/api/proof-assets", data);
+      return await response.json();
     },
-    onSuccess: (data) => {
+    onSuccess: (data: any) => {
       setResult({
         ok: true,
         timestamp: new Date().toISOString(),
@@ -95,12 +96,9 @@ export default function Verification() {
       circuitOrSchemaId: formData.circuit_or_schema_id || undefined,
       circuitCid: formData.circuit_cid || undefined,
       schemaCid: formData.schema_cid || undefined,
-      proofFormat: formData.proof_format,
+      proofFormat: formData.proof_format as any,
       proofDigest: formData.proof_digest,
-      digestAlg: formData.digest_alg,
-      statusListUrl: "",
-      statusListIndex: "",
-      statusPurpose: "revocation",
+      digestAlg: formData.digest_alg as any,
     };
 
     registerMutation.mutate(payload);

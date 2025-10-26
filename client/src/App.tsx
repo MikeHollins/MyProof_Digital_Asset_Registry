@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Switch, Route } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -5,6 +6,9 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
+import AdminSettings from "@/components/AdminSettings";
+import { Button } from "@/components/ui/button";
+import { Settings as SettingsIcon } from "lucide-react";
 import Dashboard from "@/pages/Dashboard";
 import Proofs from "@/pages/Proofs";
 import Verification from "@/pages/Verification";
@@ -32,6 +36,9 @@ function Router() {
 }
 
 export default function App() {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const isDev = import.meta.env.DEV;
+  
   const style = {
     "--sidebar-width": "16rem",
     "--sidebar-width-icon": "3rem",
@@ -54,6 +61,17 @@ export default function App() {
                       <span className="text-foreground font-medium">Operational</span>
                     </span>
                   </div>
+                  {isDev && (
+                    <Button
+                      onClick={() => setSettingsOpen(true)}
+                      variant="outline"
+                      size="sm"
+                      data-testid="button-admin-settings"
+                    >
+                      <SettingsIcon className="h-4 w-4 mr-2" />
+                      Admin Settings
+                    </Button>
+                  )}
                 </div>
               </header>
               <main className="flex-1 overflow-y-auto bg-background">
@@ -63,6 +81,7 @@ export default function App() {
           </div>
         </SidebarProvider>
         <Toaster />
+        {isDev && <AdminSettings open={settingsOpen} onClose={() => setSettingsOpen(false)} />}
       </TooltipProvider>
     </QueryClientProvider>
   );
