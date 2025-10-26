@@ -127,11 +127,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Re-verify a proof asset (receipt-based verification - privacy-first, no proof bytes needed)
+  // Re-verify a proof asset (receipt-based OR fresh-proof verification)
   app.post("/api/proof-assets/:id/verify", async (req, res) => {
     try {
       console.log('[verify] ========== VERIFICATION REQUEST START ==========');
       console.log('[verify] Asset ID:', req.params.id);
+      console.log('[verify] Request body:', {
+        hasReceipt: !!req.body.receipt,
+        requireFresh: !!req.body.requireFreshProof,
+        hasProofUri: !!req.body.proof_uri,
+        hasProofBytes: !!req.body.proof_bytes,
+      });
       
       const proof = await storage.getProofAsset(req.params.id);
       if (!proof) {
@@ -143,95 +149,120 @@ export async function registerRoutes(app: Express): Promise<Server> {
         assetId: proof.proofAssetId,
         currentStatus: proof.verificationStatus,
         hasReceipt: !!proof.verifierProofRef,
+        proofFormat: proof.proofFormat,
       });
 
-      // Check if we have a receipt for fast-path verification
-      if (!proof.verifierProofRef) {
-        console.log('[verify] ❌ No receipt available');
-        return res.status(400).json({ 
-          error: "Cannot re-verify: no verification receipt available. This proof was registered before receipt-based verification was enabled." 
-        });
-      }
+      // Determine verification path: receipt-based (fast) or fresh-proof (slow)
+      const requireFresh = Boolean(req.body.requireFreshProof);
+      let claims: any = null;
 
-      // Verify the receipt signature (fast path - no proof bytes needed!)
-      console.log('[verify] Step 1: Verifying receipt signature...');
-      const { verifyReceipt } = await import("./receipt-service");
-      const receiptVerification = await verifyReceipt(proof.verifierProofRef, {
-        publicKey: receiptPublicKey!,
-        expectedAudience: "myproof-registry",
-      });
-
-      if (!receiptVerification.ok || !receiptVerification.claims) {
-        console.log('[verify] ❌ Receipt signature verification failed:', receiptVerification.reason);
-        return res.status(400).json({
-          error: "Receipt verification failed",
-          reason: receiptVerification.reason,
-        });
-      }
-      
-      console.log('[verify] ✓ Receipt signature valid');
-
-      const claims = receiptVerification.claims;
-
-      // Validate commitments match (prevent substitution attacks)
-      console.log('[verify] Step 2: Validating commitments...');
-      if (claims.proof_digest !== proof.proofDigest) {
-        console.log('[verify] ❌ Proof digest mismatch');
-        return res.status(400).json({
-          error: "Receipt validation failed: proof digest mismatch",
-        });
-      }
-      if (claims.policy_hash !== proof.policyHash) {
-        console.log('[verify] ❌ Policy hash mismatch');
-        return res.status(400).json({
-          error: "Receipt validation failed: policy hash mismatch",
-        });
-      }
-      if (claims.constraint_hash !== proof.constraintHash) {
-        console.log('[verify] ❌ Constraint hash mismatch');
-        return res.status(400).json({
-          error: "Receipt validation failed: constraint hash mismatch",
-        });
-      }
-      console.log('[verify] ✓ All commitments match');
-
-      // Validate status reference matches (prevent receipt substitution from different proof)
-      // Normalize URLs for comparison to handle case differences and trailing slashes
-      console.log('[verify] Step 3: Validating status reference...');
-      let normalizedReceiptUrl: string;
-      let normalizedProofUrl: string;
-      
-      try {
-        normalizedReceiptUrl = normalizeUrl(claims.status_ref.statusListUrl);
-        normalizedProofUrl = normalizeUrl(proof.statusListUrl);
-      } catch (error: any) {
-        console.log('[verify] ❌ Invalid status list URL format');
-        return res.status(400).json({
-          error: "Invalid status list URL format",
-          details: error.message,
-        });
-      }
-      
-      if (normalizedReceiptUrl !== normalizedProofUrl || 
-          claims.status_ref.statusListIndex !== proof.statusListIndex ||
-          claims.status_ref.statusPurpose !== proof.statusPurpose) {
-        console.error('[verify] ❌ Status reference mismatch:', {
-          receipt: {
-            url: normalizedReceiptUrl,
-            index: claims.status_ref.statusListIndex,
-            purpose: claims.status_ref.statusPurpose,
+      // If requireFreshProof is true, skip receipt validation and go straight to fresh-proof
+      if (requireFresh) {
+        console.log('[verify] ⚙️  Fresh-proof mode requested - skipping receipt validation');
+        
+        // Use proof's stored metadata as claims for fresh-proof verification
+        claims = {
+          proof_digest: proof.proofDigest,
+          policy_hash: proof.policyHash,
+          constraint_hash: proof.constraintHash,
+          status_ref: {
+            statusListUrl: proof.statusListUrl,
+            statusListIndex: proof.statusListIndex,
+            statusPurpose: proof.statusPurpose,
           },
-          proof: {
-            url: normalizedProofUrl,
-            index: proof.statusListIndex,
-            purpose: proof.statusPurpose,
-          }
+        };
+      } else {
+        // Fast path: receipt-based verification
+        if (!proof.verifierProofRef) {
+          console.log('[verify] ❌ No receipt available for fast-path verification');
+          return res.status(400).json({ 
+            error: "Cannot re-verify: no verification receipt available. This proof was registered before receipt-based verification was enabled.",
+            hint: "Use requireFreshProof mode with proof_bytes or proof_uri to verify without receipt",
+          });
+        }
+
+        console.log('[verify] Step 1: Verifying receipt signature (fast path)...');
+        const { verifyReceipt } = await import("./receipt-service");
+        
+        const receiptVerification = await verifyReceipt(proof.verifierProofRef, {
+          publicKey: receiptPublicKey!,
+          expectedAudience: "myproof-registry",
         });
-        return res.status(400).json({
-          error: "Receipt validation failed: status reference mismatch (url, index, or purpose)",
-        });
+
+        if (!receiptVerification.ok || !receiptVerification.claims) {
+          console.log('[verify] ❌ Receipt signature verification failed:', receiptVerification.reason);
+          return res.status(400).json({
+            error: "Receipt verification failed",
+            reason: receiptVerification.reason,
+          });
+        }
+        
+        console.log('[verify] ✓ Receipt signature valid');
+        claims = receiptVerification.claims;
       }
-      console.log('[verify] ✓ Status reference matches');
+
+      // Validate commitments match (prevent substitution attacks) - skip if fresh-proof only
+      if (!requireFresh) {
+        console.log('[verify] Step 2: Validating commitments...');
+        if (claims.proof_digest !== proof.proofDigest) {
+          console.log('[verify] ❌ Proof digest mismatch');
+          return res.status(400).json({
+            error: "Receipt validation failed: proof digest mismatch",
+          });
+        }
+        if (claims.policy_hash !== proof.policyHash) {
+          console.log('[verify] ❌ Policy hash mismatch');
+          return res.status(400).json({
+            error: "Receipt validation failed: policy hash mismatch",
+          });
+        }
+        if (claims.constraint_hash !== proof.constraintHash) {
+          console.log('[verify] ❌ Constraint hash mismatch');
+          return res.status(400).json({
+            error: "Receipt validation failed: constraint hash mismatch",
+          });
+        }
+        console.log('[verify] ✓ All commitments match');
+      }
+
+      // Validate status reference matches (prevent receipt substitution from different proof) - skip if fresh-proof only
+      if (!requireFresh) {
+        console.log('[verify] Step 3: Validating status reference...');
+        let normalizedReceiptUrl: string;
+        let normalizedProofUrl: string;
+        
+        try {
+          normalizedReceiptUrl = normalizeUrl(claims.status_ref.statusListUrl);
+          normalizedProofUrl = normalizeUrl(proof.statusListUrl);
+        } catch (error: any) {
+          console.log('[verify] ❌ Invalid status list URL format');
+          return res.status(400).json({
+            error: "Invalid status list URL format",
+            details: error.message,
+          });
+        }
+        
+        if (normalizedReceiptUrl !== normalizedProofUrl || 
+            claims.status_ref.statusListIndex !== proof.statusListIndex ||
+            claims.status_ref.statusPurpose !== proof.statusPurpose) {
+          console.error('[verify] ❌ Status reference mismatch:', {
+            receipt: {
+              url: normalizedReceiptUrl,
+              index: claims.status_ref.statusListIndex,
+              purpose: claims.status_ref.statusPurpose,
+            },
+            proof: {
+              url: normalizedProofUrl,
+              index: proof.statusListIndex,
+              purpose: proof.statusPurpose,
+            }
+          });
+          return res.status(400).json({
+            error: "Receipt validation failed: status reference mismatch (url, index, or purpose)",
+          });
+        }
+        console.log('[verify] ✓ Status reference matches');
+      }
 
       // Check W3C Status List with fail-closed security model
       console.log('[verify] Step 4: Checking W3C Status List...');
@@ -269,6 +300,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       console.log('[verify] Final status verdict:', statusVerdict);
 
+      // Phase 2: Fresh-proof verification path (execute proof bytes if requested)
+      let freshProofResult: any = null;
+      
+      if (requireFresh) {
+        console.log('[verify] ========== FRESH-PROOF MODE ==========');
+        console.log('[verify] ⚙️  Fresh-proof mode requested - fetching proof bytes...');
+        const { fetchWithSRI, decodeB64u } = await import("./services/sri");
+        const { verifyFreshProof } = await import("./services/fresh-verifier");
+        
+        let proofBytes: Uint8Array | null = null;
+        
+        if (req.body.proof_bytes) {
+          console.log('[verify] Using provided proof_bytes');
+          proofBytes = new Uint8Array(decodeB64u(req.body.proof_bytes));
+        } else if (req.body.proof_uri) {
+          console.log('[verify] Fetching proof from URI with SRI:', req.body.proof_uri);
+          try {
+            proofBytes = await fetchWithSRI(req.body.proof_uri, claims.proof_digest);
+            console.log('[verify] ✓ Proof bytes fetched and SRI validated');
+          } catch (error: any) {
+            console.log('[verify] ❌ SRI fetch failed:', error.message);
+            return res.status(400).json({
+              error: "Fresh proof fetch failed",
+              reason: error.message,
+            });
+          }
+        } else {
+          console.log('[verify] ❌ Fresh proof required but not provided');
+          return res.status(400).json({
+            error: "Fresh proof verification required",
+            reason: "fresh_proof_required",
+            hint: "Provide either proof_bytes (base64url) or proof_uri (https)",
+          });
+        }
+        
+        // Verify fresh proof by format
+        console.log('[verify] Executing fresh-proof verification for format:', proof.proofFormat);
+        const verifyResult = await verifyFreshProof(proof.proofFormat, proofBytes);
+        
+        if (!verifyResult.ok) {
+          console.log('[verify] ❌ Fresh proof verification failed:', verifyResult.reason);
+          return res.status(400).json({
+            error: "Fresh proof verification failed",
+            reason: verifyResult.reason || "verification_failed",
+          });
+        }
+        
+        console.log('[verify] ✓ Fresh proof verified successfully');
+        freshProofResult = verifyResult;
+        
+        // CRITICAL: Discard proof bytes (privacy-first - never persist)
+        proofBytes = null;
+      }
+
       // Update verification timestamp (proof is still valid based on receipt)
       console.log('[verify] Updating proof asset with new status...');
       const updatedProof = await storage.updateProofAsset(proof.proofAssetId, {
@@ -278,14 +363,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Create audit event
       await storage.createAuditEvent({
-        eventType: "STATUS_UPDATE",
+        eventType: "USE",
         assetId: proof.proofAssetId,
         payload: {
           old_status: proof.verificationStatus,
           new_status: statusVerdict,
-          verification_method: "receipt_based",
+          verification_method: requireFresh ? "fresh_proof" : "receipt_based",
           receipt_verified: true,
           commitments_matched: true,
+          fresh_proof_verified: requireFresh,
           re_verification: true,
         },
         traceId: crypto.randomUUID(),
@@ -297,12 +383,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         success: true,
         verificationStatus: statusVerdict,
-        verificationMethod: "receipt_based",
+        verificationMethod: requireFresh ? "fresh_proof" : "receipt_based",
         verificationResult: {
           ok: true,
           receiptVerified: true,
           commitmentsMatched: true,
           statusChecked: true,
+          freshProofVerified: requireFresh,
+          freshProofMetadata: freshProofResult?.metadata,
           claims: {
             proof_digest: claims.proof_digest,
             policy_hash: claims.policy_hash,

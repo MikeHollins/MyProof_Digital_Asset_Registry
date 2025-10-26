@@ -109,6 +109,28 @@ export const apiKeys = pgTable("api_keys", {
   statusIdx: index("ix_api_keys_status").on(table.status),
 }));
 
+// Asset Transfers - Provenance tracking for ownership changes
+export const assetTransfers = pgTable("asset_transfers", {
+  transferId: uuid("transfer_id").primaryKey().defaultRandom(),
+  assetId: varchar("asset_id", { length: 36 }).notNull().references(() => proofAssets.proofAssetId),
+  fromDid: text("from_did").notNull(),
+  toDid: text("to_did").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  assetIdx: index("ix_transfers_asset").on(table.assetId),
+  toDidIdx: index("ix_transfers_to_did").on(table.toDid),
+}));
+
+// Asset Usage - Track usage events with optional license limits
+export const assetUsage = pgTable("asset_usage", {
+  usageId: uuid("usage_id").primaryKey().defaultRandom(),
+  assetId: varchar("asset_id", { length: 36 }).notNull().references(() => proofAssets.proofAssetId),
+  usedAt: timestamp("used_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  assetIdx: index("ix_usage_asset").on(table.assetId),
+  usedAtIdx: index("ix_usage_used_at").on(table.usedAt),
+}));
+
 // Zod Schemas for API validation
 export const proofFormatEnum = z.enum([
   'ZK_PROOF',

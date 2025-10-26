@@ -188,6 +188,18 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   const { registerAdminPing } = await import("./routes-admin-ping");
   registerAdminPing(app);
 
+  // Register audit export routes (Merkle transparency)
+  const { registerAuditExports } = await import("./routes-audit-exports");
+  registerAuditExports(app);
+
+  // Register transfer routes (Phase 3: Provenance tracking)
+  const { registerTransferRoutes } = await import("./routes-transfer");
+  registerTransferRoutes(app);
+
+  // Register usage routes (Phase 3: Usage receipts)
+  const { registerUsageRoutes } = await import("./routes-usage");
+  registerUsageRoutes(app);
+
   // Error handling middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
