@@ -1,0 +1,312 @@
+Perfect — here’s the **Recent Events Table** add-on for the **Audit Logs** page so you can pick an `event_id` with one click (no more pasting). It includes:
+
+* A **backend route** to list recent `audit_events` (with basic search + limit)
+* A **front-end table** with search, copy-id, and **Click to select** (fills the “Get Proof” input)
+* Toasts + accessible UX, matches your Tailwind/Wouter style
+
+No PII is exposed; payloads are shown truncated & stringified.
+
+---
+
+## 1) Backend — list recent audit events
+
+**Create** `backend/src/routes/auditEvents.ts`:
+
+```ts
+import type { Express, Request, Response } from "express";
+import { db } from "../shared/db";
+
+/**
+ * GET /api/audit/events?limit=50&q=TRANSFER
+ * Returns recent audit events (PII-free).
+ * - limit: number (default 50, max 500)
+ * - q: optional text filter on event_type or asset_id (case-insensitive)
+ */
+export function registerAuditEvents(app: Express) {
+  app.get('/api/audit/events', async (req: Request, res: Response) => {
+    try {
+      let limit = Number(req.query.limit || 50);
+      if (!Number.isFinite(limit) || limit <= 0) limit = 50;
+      if (limit > 500) limit = 500;
+
+      const q = (req.query.q as string | undefined) || '';
+
+      // Simple text filter on event_type or asset_id
+      let sql = `
+        SELECT event_id, event_type, asset_id, payload, created_at
+        FROM audit_events
+      `;
+      const args: any[] = [];
+      const cond: string[] = [];
+
+      if (q) {
+        args.push(`%${q}%`);
+        cond.push(`(event_type ILIKE $${args.length} OR asset_id::text ILIKE $${args.length})`);
+      }
+
+      if (cond.length) sql += ` WHERE ` + cond.join(' AND ');
+      sql += ` ORDER BY created_at DESC LIMIT ${limit}`;
+
+      const r = await db.execute(sql, args);
+
+      // Return payload truncated for safety
+      const rows = (r.rows || []).map((ev: any) => ({
+        event_id: ev.event_id,
+        event_type: ev.event_type,
+        asset_id: ev.asset_id,
+        // Truncate payload string for table; full JSON remains fetchable via /api/audit/proof if needed
+        payload_preview: safePreview(ev.payload),
+        created_at: ev.created_at
+      }));
+
+      return res.json({ ok: true, rows });
+    } catch (e: any) {
+      return res.status(500).json({ error: 'internal_error', detail: String(e.message || e) });
+    }
+  });
+}
+
+function safePreview(payload: any, max = 120) {
+  try {
+    const s = JSON.stringify(payload);
+    return s.length > max ? s.slice(0, max) + '…' : s;
+  } catch {
+    return '';
+  }
+}
+```
+
+**Mount it** in your server bootstrap (e.g., `backend/src/server.ts`):
+
+```ts
+import { registerAuditEvents } from "./routes/auditEvents";
+// ...
+registerAuditEvents(app);
+```
+
+---
+
+## 2) Front-end — Audit Logs page with Recent Events table
+
+**Replace** `client/src/pages/AuditLogs.tsx` with this full version (includes **Root**, **Inclusion Proof**, and **Recent Events** sections working together):
+
+```tsx
+import React, { useEffect, useMemo, useState } from "react";
+import { useToast } from "@/components/toast/ToastProvider";
+
+// Helpers
+function authHeader() {
+  const t = localStorage.getItem("ADMIN_API_TOKEN") || "";
+  return t ? { Authorization: t } : {};
+}
+async function fetchJSON(url: string, init?: RequestInit) {
+  const res = await fetch(url, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers || {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
+function formatDate(x?: string) {
+  if (!x) return "—";
+  try { return new Date(x).toLocaleString(); } catch { return x; }
+}
+function truncate(s: string, n=60) {
+  if (!s) return "—";
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+export default function AuditLogs() {
+  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
+
+  // Root state
+  const [root, setRoot] = useState<{ count?: number; root?: string } | null>(null);
+
+  // Proof state
+  const [eventId, setEventId] = useState<string>("");
+  const [proof, setProof] = useState<any>(null);
+
+  // List state
+  const [rows, setRows] = useState<any[]>([]);
+  const [q, setQ] = useState<string>("");
+  const [limit, setLimit] = useState<number>(50);
+  const [loading, setLoading] = useState<boolean>(false);
+
+  async function getRoot() {
+    setLoading(true);
+    setProof(null);
+    try {
+      const data = await fetchJSON(`/api/audit/root`);
+      setRoot({ count: data.count, root: data.root });
+      toastSuccess("Merkle root computed.", "Audit");
+    } catch (e: any) {
+      toastError(String(e.message || e), "Audit Error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function getProof() {
+    setLoading(true);
+    try {
+      if (!eventId) throw new Error("event_id required");
+      const data = await fetchJSON(`/api/audit/proof/${encodeURIComponent(eventId)}`);
+      setProof(data);
+      toastSuccess("Inclusion proof generated.", "Audit");
+    } catch (e: any) {
+      toastError(String(e.message || e), "Audit Error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadEvents() {
+    setLoading(true);
+    try {
+      const u = new URL(`/api/audit/events`, window.location.origin);
+      if (limit) u.searchParams.set('limit', String(limit));
+      if (q) u.searchParams.set('q', q);
+      const data = await fetchJSON(u.toString());
+      setRows(data.rows || []);
+      if (!data.rows?.length) toastInfo("No recent events.");
+    } catch (e: any) {
+      toastError(String(e.message || e), "Load Error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { loadEvents().catch(()=>{}); }, []);
+  useEffect(() => { loadEvents().catch(()=>{}); }, [q, limit]);
+
+  function copy(text: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      toastSuccess("Copied to clipboard.");
+    }).catch(()=>{});
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Recent Events */}
+      <section className="p-4 border rounded bg-white space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold">Recent Events</h2>
+          <div className="flex items-center gap-2">
+            <input
+              value={q}
+              onChange={(e)=> setQ(e.target.value)}
+              placeholder="Search event_type or asset_id"
+              className="border p-2 rounded"
+            />
+            <select value={limit} onChange={(e)=> setLimit(Number(e.target.value))} className="border p-2 rounded">
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={200}>200</option>
+            </select>
+            <button onClick={loadEvents} className="px-3 py-1.5 rounded bg-black text-white">
+              {loading ? "Loading…" : "Reload"}
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="text-left p-2">Event ID</th>
+                <th className="text-left p-2">Type</th>
+                <th className="text-left p-2">Asset</th>
+                <th className="text-left p-2">Payload</th>
+                <th className="text-left p-2">Created</th>
+                <th className="text-left p-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r:any) => (
+                <tr key={r.event_id} className="border-t">
+                  <td className="p-2 font-mono text-xs">{truncate(r.event_id, 22)}</td>
+                  <td className="p-2">{r.event_type}</td>
+                  <td className="p-2 font-mono text-xs">{truncate(String(r.asset_id || "—"), 22)}</td>
+                  <td className="p-2 font-mono text-xs">{truncate(String(r.payload_preview || "—"), 48)}</td>
+                  <td className="p-2">{formatDate(r.created_at)}</td>
+                  <td className="p-2 flex items-center gap-2">
+                    <button
+                      className="text-blue-600 underline"
+                      title="Copy event_id"
+                      onClick={()=> copy(r.event_id)}
+                    >
+                      copy id
+                    </button>
+                    <button
+                      className="px-2 py-1 rounded border text-xs"
+                      onClick={()=> setEventId(r.event_id)}
+                      title="Use this event_id"
+                    >
+                      select
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!rows.length && (
+                <tr>
+                  <td className="p-4 text-gray-500" colSpan={6}>
+                    {loading ? "Loading…" : "No audit events yet."}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Merkle Root */}
+      <section className="p-4 border rounded bg-white space-y-2">
+        <h2 className="font-semibold">Merkle Root</h2>
+        <button onClick={getRoot} className="px-3 py-1.5 rounded bg-black text-white">
+          {loading ? "Computing…" : "Get Root"}
+        </button>
+        {root && (
+          <div className="text-sm mt-2">
+            <div>Count: <span className="font-mono">{root.count ?? "—"}</span></div>
+            <div>Root: <span className="font-mono break-all">{root.root ?? "—"}</span></div>
+          </div>
+        )}
+      </section>
+
+      {/* Inclusion Proof */}
+      <section className="p-4 border rounded bg-white space-y-2">
+        <h2 className="font-semibold">Inclusion Proof by event_id</h2>
+        <div className="flex items-center gap-2">
+          <input
+            value={eventId}
+            onChange={(e)=> setEventId(e.target.value)}
+            placeholder="event_id (UUID)"
+            className="border p-2 rounded flex-1"
+          />
+          <button onClick={getProof} className="px-3 py-1.5 rounded border">
+            {loading ? "Working…" : "Get Proof"}
+          </button>
+        </div>
+        {proof && (
+          <pre className="bg-gray-50 p-2 overflow-x-auto text-sm">{JSON.stringify(proof, null, 2)}</pre>
+        )}
+      </section>
+    </div>
+  );
+}
+```
+
+---
+
+## 3) Smoke checklist
+
+* Open **Audit Logs** → table should load with recent events (search & limit work).
+* Click **select** on any row → the `event_id` input fills → click **Get Proof** → inclusion proof returns.
+* Click **Get Root** → shows count & hex root.
+* “copy id” copies the `event_id` (see success toast).
+
+---
+
+If you want a compact “Recent 10” grid at the top of **Dashboard** with the same selection behavior, I can generate that too.
