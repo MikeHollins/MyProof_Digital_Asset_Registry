@@ -1,0 +1,525 @@
+Awesome — here are the three complete React pages your Replit agent can drop into MyProof PAR. They follow the Wouter + Tailwind styling pattern we set in App.tsx and wire directly to the Phase-1 endpoints we just built.
+
+Files created:
+
+client/src/pages/Proofs.tsx
+
+client/src/pages/Verification.tsx
+
+client/src/pages/StatusLists.tsx
+
+Each page includes:
+
+Live fetch (no placeholders)
+
+Clean, accessible forms and tables
+
+Admin token support for dev (reads localStorage.ADMIN_API_TOKEN)
+
+Helpful UX (spinners, toasts, copy-to-clipboard, error display)
+
+If any endpoint path differs in your repo, just change the API constants in each file.
+
+client/src/pages/Proofs.tsx
+import React, { useEffect, useMemo, useState } from "react";
+
+// ===== Helpers =====
+function authHeader() {
+  const t = localStorage.getItem("ADMIN_API_TOKEN") || ""; // "ApiKey <keyId>.<secret>"
+  return t ? { Authorization: t } : {};
+}
+
+async function fetchJSON(url: string, init?: RequestInit) {
+  const res = await fetch(url, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers || {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function formatDate(x?: string) {
+  if (!x) return "—";
+  try { return new Date(x).toLocaleString(); } catch { return x; }
+}
+
+// ===== Page =====
+export default function Proofs() {
+  const [rows, setRows] = useState<any[]>([]);
+  const [q, setQ] = useState<string>("");
+  const [status, setStatus] = useState<string>(""); // 'verified'|'revoked'|'suspended' or empty
+  const [loading, setLoading] = useState<boolean>(false);
+  const [err, setErr] = useState<string>("");
+
+  const filtered = useMemo(() => {
+    return rows.filter((r) => {
+      const matchQ =
+        !q ||
+        String(r.proof_asset_id).toLowerCase().includes(q.toLowerCase()) ||
+        String(r.policy_hash).toLowerCase().includes(q.toLowerCase()) ||
+        String(r.constraint_hash).toLowerCase().includes(q.toLowerCase());
+      const matchS = !status || String(r.verification_status) === status;
+      return matchQ && matchS;
+    });
+  }, [rows, q, status]);
+
+  async function load() {
+    setLoading(true);
+    setErr("");
+    try {
+      // You can enhance this route to accept query params, but filter client-side for now.
+      const data = await fetchJSON(`/api/proof-assets`);
+      setRows(data.rows || data.assets || []);
+    } catch (e: any) {
+      setErr(String(e.message || e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  function copy(text: string) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+
+  return (
+    <div className="space-y-4">
+      <header className="flex items-center gap-3">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search by asset id / policy hash / constraint hash"
+          className="border p-2 rounded flex-1"
+        />
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className="border p-2 rounded">
+          <option value="">All statuses</option>
+          <option value="verified">verified</option>
+          <option value="revoked">revoked</option>
+          <option value="suspended">suspended</option>
+        </select>
+        <button onClick={load} className="px-4 py-2 rounded bg-black text-white">
+          {loading ? "Loading…" : "Reload"}
+        </button>
+      </header>
+
+      {err && <div className="text-sm text-red-600">{err}</div>}
+
+      <section className="overflow-x-auto">
+        <table className="w-full text-sm border">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="text-left p-2">Asset ID</th>
+              <th className="text-left p-2">Format</th>
+              <th className="text-left p-2">Policy Hash</th>
+              <th className="text-left p-2">Constraint Hash</th>
+              <th className="text-left p-2">Status</th>
+              <th className="text-left p-2">Created</th>
+              <th className="text-left p-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((r) => (
+              <tr key={r.proof_asset_id} className="border-t">
+                <td className="p-2 font-mono text-xs">
+                  {r.proof_asset_id}
+                  <button
+                    className="ml-2 text-blue-600 underline"
+                    onClick={() => copy(r.proof_asset_id)}
+                    title="Copy asset id"
+                  >
+                    copy
+                  </button>
+                </td>
+                <td className="p-2">{r.proof_format || "—"}</td>
+                <td className="p-2 font-mono text-xs">{truncateHash(r.policy_hash)}</td>
+                <td className="p-2 font-mono text-xs">{truncateHash(r.constraint_hash)}</td>
+                <td className="p-2">
+                  <span className={pillClass(r.verification_status)}>{r.verification_status}</span>
+                </td>
+                <td className="p-2">{formatDate(r.created_at)}</td>
+                <td className="p-2">
+                  <a
+                    className="text-blue-600 underline"
+                    href={`/verification?asset=${encodeURIComponent(r.proof_asset_id)}`}
+                  >
+                    Verify
+                  </a>
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
+              <tr>
+                <td className="p-4 text-gray-500" colSpan={7}>
+                  {loading ? "Loading…" : "No proof assets found."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  );
+}
+
+function truncateHash(h: string, n = 10) {
+  if (!h) return "—";
+  return h.length > 2 * n ? `${h.slice(0, n)}…${h.slice(-n)}` : h;
+}
+
+function pillClass(status?: string) {
+  const base = "px-2 py-0.5 rounded text-xs";
+  if (status === "verified") return `${base} bg-green-100 text-green-800`;
+  if (status === "revoked") return `${base} bg-red-100 text-red-800`;
+  if (status === "suspended") return `${base} bg-yellow-100 text-yellow-800`;
+  return `${base} bg-gray-200 text-gray-800`;
+}
+
+
+Backend: add list route if needed
+
+// backend: list proof assets
+app.get('/api/proof-assets', async (_req,res) => {
+  const r = await db.execute(`
+    SELECT proof_asset_id, proof_format, policy_hash, constraint_hash, verification_status, created_at
+    FROM proof_assets ORDER BY created_at DESC LIMIT 200
+  `);
+  res.json({ ok:true, rows: r.rows });
+});
+
+client/src/pages/Verification.tsx
+import React, { useEffect, useState } from "react";
+import { useLocation } from "wouter";
+
+// ===== Helpers =====
+function authHeader() {
+  const t = localStorage.getItem("ADMIN_API_TOKEN") || "";
+  return t ? { Authorization: t } : {};
+}
+async function fetchJSON(url: string, init?: RequestInit) {
+  const res = await fetch(url, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers || {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.reason || data?.error || `HTTP ${res.status}`);
+  return data;
+}
+
+// ===== Page =====
+export default function Verification() {
+  const [location] = useLocation();
+  const params = new URLSearchParams(location.split("?")[1] || "");
+  const assetQuery = params.get("asset") || "";
+
+  const [assetId, setAssetId] = useState<string>(assetQuery);
+  const [receipt, setReceipt] = useState<string>("");
+  const [audience, setAudience] = useState<string>("myproof-registry");
+  const [nonce, setNonce] = useState<string>("demo");
+  const [result, setResult] = useState<any>(null);
+  const [err, setErr] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setErr("");
+    setResult(null);
+    try {
+      if (!assetId) throw new Error("Asset ID is required");
+      if (!receipt) throw new Error("Receipt (compact JWS) is required");
+      const data = await fetchJSON(`/api/proof-assets/${encodeURIComponent(assetId)}/verify`, {
+        method: "POST",
+        body: JSON.stringify({ receipt, audience, nonce }),
+      });
+      setResult(data);
+    } catch (e: any) {
+      setErr(String(e.message || e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <form onSubmit={onSubmit} className="p-4 border rounded bg-white space-y-3">
+        <div className="grid gap-3">
+          <label className="text-sm">Asset ID</label>
+          <input
+            value={assetId}
+            onChange={(e) => setAssetId(e.target.value)}
+            placeholder="proof_asset_id"
+            className="border p-2 rounded"
+          />
+
+          <label className="text-sm">Receipt (compact JWS)</label>
+          <textarea
+            value={receipt}
+            onChange={(e) => setReceipt(e.target.value)}
+            placeholder="eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsIi4uLg"
+            className="border p-2 rounded h-40 font-mono"
+          />
+
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm">Audience</label>
+              <input
+                value={audience}
+                onChange={(e) => setAudience(e.target.value)}
+                className="border p-2 rounded w-full"
+              />
+            </div>
+            <div>
+              <label className="text-sm">Nonce</label>
+              <input
+                value={nonce}
+                onChange={(e) => setNonce(e.target.value)}
+                className="border p-2 rounded w-full"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button type="submit" className="px-4 py-2 rounded bg-black text-white">
+            {loading ? "Verifying…" : "Verify"}
+          </button>
+          {err && <span className="text-sm text-red-600">{err}</span>}
+        </div>
+      </form>
+
+      {result && (
+        <section className="p-4 border rounded bg-white">
+          <h2 className="font-semibold mb-2">Verification Result</h2>
+          <VerdictBadge verdict={result.verdict} />
+          <pre className="bg-gray-50 p-2 overflow-x-auto">{JSON.stringify(result, null, 2)}</pre>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function VerdictBadge({ verdict }: { verdict?: string }) {
+  const base = "inline-block px-2 py-0.5 rounded text-xs ml-2";
+  if (verdict === "valid") return <span className={`${base} bg-green-100 text-green-800`}>valid</span>;
+  if (verdict === "revoked") return <span className={`${base} bg-red-100 text-red-800`}>revoked</span>;
+  if (verdict === "suspended") return <span className={`${base} bg-yellow-100 text-yellow-800`}>suspended</span>;
+  return <span className={`${base} bg-gray-200 text-gray-800`}>{verdict || "—"}</span>;
+}
+
+client/src/pages/StatusLists.tsx
+import React, { useEffect, useState } from "react";
+
+// ===== Helpers =====
+function authHeader() {
+  const t = localStorage.getItem("ADMIN_API_TOKEN") || "";
+  return t ? { Authorization: t } : {};
+}
+async function fetchJSON(url: string, init?: RequestInit) {
+  const res = await fetch(url, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers || {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
+async function fetchBinary(url: string) {
+  const res = await fetch(url, { method: "GET" });
+  const etag = res.headers.get("ETag") || "";
+  const buf = new Uint8Array(await res.arrayBuffer());
+  return { etag, buf };
+}
+function getBit(raw: Uint8Array, index: number) {
+  const byte = index >> 3, bit = index & 7;
+  return (raw[byte] >> bit) & 1;
+}
+
+// ===== Page =====
+export default function StatusLists() {
+  const [purpose, setPurpose] = useState<"revocation" | "suspension">("revocation");
+  const [url, setUrl] = useState<string>(`http://localhost:8080/status/lists/revocation/demo-001`);
+  const [index, setIndex] = useState<string>("284109");
+  const [etag, setEtag] = useState<string>("");
+  const [bit, setBit] = useState<number | null>(null);
+  const [opsText, setOpsText] = useState<string>(`[{"op":"set","index":"284109"}]`);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [msg, setMsg] = useState<string>("");
+
+  async function loadList() {
+    setMsg("");
+    try {
+      const { etag, buf } = await fetchBinary(url);
+      setEtag(etag);
+      if (index) setBit(getBit(buf, Number(index)));
+    } catch (e: any) {
+      setMsg(`Load error: ${String(e.message || e)}`);
+    }
+  }
+
+  useEffect(() => {
+    // auto-refresh on mount or url change
+    loadList().catch(() => {});
+  }, [url]);
+
+  async function applyOps(ops: { op: "set" | "clear" | "flip"; index: number }[]) {
+    setLoading(true);
+    setMsg("");
+    try {
+      const data = await fetchJSON(`/api/status-lists/${purpose}/update`, {
+        method: "POST",
+        body: JSON.stringify({ statusListUrl: url, operations: ops }),
+      });
+      setEtag(String(data.etag || ""));
+      setMsg("Status updated.");
+      await loadList();
+    } catch (e: any) {
+      setMsg(`Update error: ${String(e.message || e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function parseOps() {
+    try {
+      const arr = JSON.parse(opsText);
+      return Array.isArray(arr) ? arr.map((o) => ({ op: o.op, index: Number(o.index) })) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <section className="p-4 border rounded bg-white space-y-3">
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <label className="text-sm">Purpose</label>
+            <select
+              value={purpose}
+              onChange={(e) => setPurpose(e.target.value as any)}
+              className="border p-2 rounded w-full"
+            >
+              <option value="revocation">revocation</option>
+              <option value="suspension">suspension</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm">Status List URL</label>
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              className="border p-2 rounded w-full"
+              placeholder="http://localhost:8080/status/lists/revocation/demo-001"
+            />
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-3">
+          <div>
+            <label className="text-sm">Index</label>
+            <input
+              value={index}
+              onChange={(e) => setIndex(e.target.value)}
+              className="border p-2 rounded w-full"
+            />
+          </div>
+          <div>
+            <label className="text-sm">Current Bit</label>
+            <div className="p-2 border rounded bg-gray-50">{bit === null ? "—" : bit}</div>
+          </div>
+          <div className="flex items-end">
+            <button onClick={loadList} className="px-4 py-2 rounded bg-black text-white">
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-2">
+          <button
+            onClick={() => applyOps([{ op: "set", index: Number(index) }])}
+            className="px-4 py-2 rounded bg-red-600 text-white"
+          >
+            Set (revoke)
+          </button>
+          <button
+            onClick={() => applyOps([{ op: "clear", index: Number(index) }])}
+            className="px-4 py-2 rounded bg-green-600 text-white"
+          >
+            Clear (valid)
+          </button>
+          <button
+            onClick={() => applyOps([{ op: "flip", index: Number(index) }])}
+            className="px-4 py-2 rounded bg-yellow-600 text-white"
+          >
+            Flip
+          </button>
+        </div>
+
+        <div className="grid gap-2">
+          <label className="text-sm">Raw Ops JSON</label>
+          <textarea
+            value={opsText}
+            onChange={(e) => setOpsText(e.target.value)}
+            className="border p-2 rounded font-mono h-24"
+            placeholder='[{"op":"set","index":"284109"}]'
+          />
+          <button
+            disabled={loading}
+            onClick={() => applyOps(parseOps())}
+            className="px-4 py-2 rounded border"
+          >
+            {loading ? "Applying…" : "Apply JSON Ops"}
+          </button>
+        </div>
+
+        <div className="text-sm text-gray-600">
+          <div>ETag: <span className="font-mono">{etag || "—"}</span></div>
+          {msg && <div className="text-sm mt-1">{msg}</div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+Quick hook-up checklist
+
+Add these files:
+
+client/src/pages/Proofs.tsx
+client/src/pages/Verification.tsx
+client/src/pages/StatusLists.tsx
+
+
+Ensure your client/src/App.tsx includes the routes (as we built earlier):
+
+<Route path="/proofs" component={Proofs} />
+<Route path="/verification" component={Verification} />
+<Route path="/status-lists" component={StatusLists} />
+
+
+Set an admin token during dev:
+
+Run: POST /api/admin/bootstrap to get a one-time admin token.
+
+In the UI, create a tiny Admin Settings modal (or use devtools) to set:
+
+localStorage.ADMIN_API_TOKEN = "ApiKey <KEYID>.<SECRET>"
+
+
+Wire the simple list route (if missing):
+
+// backend
+app.get('/api/proof-assets', async (_req,res) => {
+  const r = await db.execute(`
+    SELECT proof_asset_id, proof_format, policy_hash, constraint_hash, verification_status, created_at
+    FROM proof_assets ORDER BY created_at DESC LIMIT 200
+  `);
+  res.json({ ok:true, rows: r.rows });
+});
+
+
+Everything else (mint, verify, status update) is already provided in the Phase-1 backend.

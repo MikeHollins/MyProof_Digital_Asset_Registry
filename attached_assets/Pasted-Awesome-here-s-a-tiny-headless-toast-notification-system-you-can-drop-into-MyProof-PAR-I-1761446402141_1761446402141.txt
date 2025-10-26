@@ -1,0 +1,323 @@
+Awesome — here’s a **tiny, headless toast/notification system** you can drop into **MyProof PAR**. It’s accessible (ARIA live region), keyboard-friendly, Tailwind-ready, and has zero external deps. You’ll get:
+
+* A **ToastProvider** (context) + **useToast()** hook
+* A simple **ToastHost** that renders stacked toasts (bottom-right)
+* **Variants**: success, error, info, warning (with icons/colors)
+* **API**: `toast.success("...")`, `toast.error("...")`, etc. (plus `toast.show({...})`)
+* Integration patches for **Admin Settings**, **Proofs**, **Verification**, **Status Lists**
+
+> Everything below is safe for dev & prod. Notifications never contain secrets.
+
+---
+
+## 1) Files to add
+
+### `client/src/components/toast/ToastProvider.tsx`
+
+```tsx
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+
+export type ToastVariant = "success" | "error" | "info" | "warning";
+export type ToastItem = {
+  id: string;
+  title?: string;
+  description?: string | React.ReactNode;
+  variant?: ToastVariant;
+  duration?: number; // ms
+  createdAt: number;
+};
+
+type ToastCtx = {
+  show: (t: Omit<ToastItem, "id" | "createdAt">) => string;
+  success: (description: string, title?: string, duration?: number) => string;
+  error: (description: string, title?: string, duration?: number) => string;
+  info: (description: string, title?: string, duration?: number) => string;
+  warning: (description: string, title?: string, duration?: number) => string;
+  remove: (id: string) => void;
+  toasts: ToastItem[];
+};
+
+const Ctx = createContext<ToastCtx | null>(null);
+export function useToast() {
+  const c = useContext(Ctx);
+  if (!c) throw new Error("useToast must be used inside <ToastProvider>");
+  return c;
+}
+
+function rid() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+export function ToastProvider({ children }: { children: React.ReactNode }) {
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const timers = useRef<Map<string, any>>(new Map());
+
+  const remove = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+    const h = timers.current.get(id);
+    if (h) { clearTimeout(h); timers.current.delete(id); }
+  }, []);
+
+  const show = useCallback((t: Omit<ToastItem, "id" | "createdAt">) => {
+    const id = rid();
+    const toast: ToastItem = {
+      id,
+      createdAt: Date.now(),
+      title: t.title,
+      description: t.description,
+      variant: t.variant || "info",
+      duration: t.duration ?? 4000,
+    };
+    setToasts((prev) => [...prev, toast]);
+
+    if (toast.duration && toast.duration > 0) {
+      const h = setTimeout(() => remove(id), toast.duration);
+      timers.current.set(id, h);
+    }
+    return id;
+  }, [remove]);
+
+  const success = useCallback((desc: string, title?: string, duration?: number) => show({ variant: "success", description: desc, title, duration }), [show]);
+  const error   = useCallback((desc: string, title?: string, duration?: number) => show({ variant: "error",   description: desc, title, duration }), [show]);
+  const info    = useCallback((desc: string, title?: string, duration?: number) => show({ variant: "info",    description: desc, title, duration }), [show]);
+  const warning = useCallback((desc: string, title?: string, duration?: number) => show({ variant: "warning", description: desc, title, duration }), [show]);
+
+  const value = useMemo(() => ({ show, success, error, info, warning, remove, toasts }), [show, success, error, info, warning, remove, toasts]);
+
+  // Clean timers on unmount
+  useEffect(() => () => { for (const h of timers.current.values()) clearTimeout(h); }, []);
+
+  return (
+    <Ctx.Provider value={value}>
+      {/* ARIA live region for SRs; offscreen */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
+      {children}
+    </Ctx.Provider>
+  );
+}
+```
+
+### `client/src/components/toast/ToastHost.tsx`
+
+```tsx
+import React from "react";
+import { ToastItem, useToast } from "./ToastProvider";
+
+function Icon({ variant }: { variant?: ToastItem["variant"] }) {
+  const cls = "w-4 h-4";
+  if (variant === "success") return <svg className={`${cls}`} viewBox="0 0 20 20" fill="currentColor"><path d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 1 1 1.4-1.4l3.2 3.2 6.8-6.8a1 1 0 0 1 1.4 0z"/></svg>;
+  if (variant === "error") return <svg className={`${cls}`} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm-1-5h2v2H9v-2Zm0-8h2v6H9V5Z" clipRule="evenodd"/></svg>;
+  if (variant === "warning") return <svg className={`${cls}`} viewBox="0 0 20 20" fill="currentColor"><path d="M8.257 3.099c.366-.756 1.42-.756 1.786 0l7.451 15.386A1 1 0 0 1 16.617 20H3.383a1 1 0 0 1-.877-1.515L9.957 3.1zM10 13a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm1-6H9v5h2V7z"/></svg>;
+  return <svg className={`${cls}`} viewBox="0 0 20 20" fill="currentColor"><path d="M2 10a8 8 0 1 1 16 0A8 8 0 0 1 2 10Zm8-5a1 1 0 0 0-1 1v3h2V6a1 1 0 0 0-1-1Zm0 7a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>;
+}
+
+function variantColors(v?: ToastItem["variant"]) {
+  if (v === "success")  return "bg-green-50 border-green-300 text-green-900";
+  if (v === "error")    return "bg-red-50 border-red-300 text-red-900";
+  if (v === "warning")  return "bg-yellow-50 border-yellow-300 text-yellow-900";
+  return "bg-blue-50 border-blue-300 text-blue-900";
+}
+
+export default function ToastHost() {
+  const { toasts, remove } = useToast();
+  return (
+    <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 w-[calc(100vw-2rem)] max-w-sm">
+      {toasts.map(t => (
+        <div key={t.id} role="status" aria-live="polite"
+             className={`border rounded shadow-sm p-3 flex items-start gap-2 ${variantColors(t.variant)}`}>
+          <div className="mt-0.5"><Icon variant={t.variant} /></div>
+          <div className="flex-1">
+            {t.title && <div className="text-sm font-medium">{t.title}</div>}
+            <div className="text-sm">{t.description || " "}</div>
+          </div>
+          <button onClick={() => remove(t.id)} className="text-xs px-2 py-1 border rounded bg-white/60 hover:bg-white">Dismiss</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+### `client/src/components/toast/index.ts`
+
+```ts
+export { ToastProvider, useToast } from "./ToastProvider";
+export { default as ToastHost } from "./ToastHost";
+```
+
+---
+
+## 2) Wrap the app with the provider + host
+
+Open **`client/src/App.tsx`** and wrap your shell with `ToastProvider`, placing `ToastHost` near the root so all pages can show notifications.
+
+```tsx
+// at top
+import { ToastProvider, ToastHost } from "@/components/toast";
+
+// inside App()
+export default function App() {
+  return (
+    <ToastProvider>
+      <div className="flex">
+        <Sidebar />
+        <div className="flex-1 min-h-screen bg-gray-50">
+          <Topbar />
+          <main className="p-4">
+            <Switch>
+              {/* ... your routes ... */}
+            </Switch>
+          </main>
+        </div>
+      </div>
+      <ToastHost />
+    </ToastProvider>
+  );
+}
+```
+
+> If your file already returns the layout, just wrap the returned JSX with `<ToastProvider>...</ToastProvider>` and add `<ToastHost />` as a child.
+
+---
+
+## 3) Use the toast in key pages
+
+Below are **minimal patches** to use `useToast()` in the three pages we added earlier and in the **AdminSettings** modal. You can paste/replace the indicated parts.
+
+### A) Admin Settings — success/error toasts
+
+**`client/src/components/AdminSettings.tsx`**
+
+```tsx
+// add import
+import { useToast } from "@/components/toast/ToastProvider";
+
+// inside component
+const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
+
+// replace setMsg("Admin token saved...") with:
+toastSuccess("Admin token saved in localStorage.", "Saved");
+
+// replace setMsg in test/clear/copy handlers, e.g.:
+toastSuccess("Copied to clipboard!", "Copied");
+// on ping fail:
+toastError(`Ping failed: ${String(e.message || e)}`, "Invalid Token");
+```
+
+You can keep the small message line if you like, but toasts provide clearer feedback.
+
+### B) Proofs — reload success/error
+
+**`client/src/pages/Proofs.tsx`**
+
+```tsx
+import { useToast } from "@/components/toast/ToastProvider";
+
+// inside component
+const { success: toastSuccess, error: toastError } = useToast();
+
+// in load()
+try {
+  const data = await fetchJSON(`/api/proof-assets`);
+  setRows(data.rows || data.assets || []);
+  toastSuccess("Proof assets reloaded.", "Reload");
+} catch (e:any) {
+  setErr(String(e.message || e));
+  toastError(String(e.message || e), "Load Error");
+}
+```
+
+### C) Verification — show result toast
+
+**`client/src/pages/Verification.tsx`**
+
+```tsx
+import { useToast } from "@/components/toast/ToastProvider";
+
+// inside component
+const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
+
+// in onSubmit() success:
+setResult(data);
+if (data.verdict === "valid") toastSuccess("Verification passed.", "Verdict: valid");
+else if (data.verdict === "revoked") toastError("Credential is revoked.", "Verdict: revoked");
+else toastInfo(`Verdict: ${data.verdict}`, "Verification");
+
+// in onSubmit() catch:
+setErr(String(e.message || e));
+toastError(String(e.message || e), "Verification Error");
+```
+
+### D) Status Lists — ops applied / load errors
+
+**`client/src/pages/StatusLists.tsx`**
+
+```tsx
+import { useToast } from "@/components/toast/ToastProvider";
+
+// inside component
+const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
+
+// in loadList() success:
+const { etag, buf } = await fetchBinary(url);
+setEtag(etag);
+if (index) setBit(getBit(buf, Number(index)));
+toastSuccess("Status list refreshed.", "ETag updated");
+
+// loadList() catch:
+setMsg(`Load error: ${String(e.message || e)}`);
+toastError(String(e.message || e), "Load Error");
+
+// in applyOps() after success:
+setEtag(String(data.etag || ""));
+toastSuccess("Status updated.", "Wrote new ETag");
+
+// in applyOps() catch:
+setMsg(`Update error: ${String(e.message || e)}`);
+toastError(String(e.message || e), "Update Error");
+```
+
+---
+
+## 4) Accessibility & styling notes
+
+* The provider includes an ARIA **live region** for screen readers.
+* Toasts are **dismissible** and auto-hide after 4s (you can change duration per toast).
+* You can tweak colors in `variantColors()` to match your brand palette.
+
+---
+
+## 5) Optional: convenience helpers
+
+If you prefer a global `toast` object, create a tiny wrapper:
+
+**`client/src/components/toast/toast.ts`**
+
+```ts
+import { useToast } from "./ToastProvider";
+export function useToastHelpers() {
+  const t = useToast();
+  return {
+    toast: t,
+    success: (msg: string, title?: string, duration?: number) => t.success(msg, title, duration),
+    error:   (msg: string, title?: string, duration?: number) => t.error(msg, title, duration),
+    info:    (msg: string, title?: string, duration?: number) => t.info(msg, title, duration),
+    warn:    (msg: string, title?: string, duration?: number) => t.warning(msg, title, duration),
+  };
+}
+```
+
+Then use `const { success, error } = useToastHelpers()` if you like that API.
+
+---
+
+## 6) Quick smoke
+
+* Open the UI → **Admin Settings** → paste token → **Save** → **Test** → You should see “Saved” and “Token valid” toasts.
+* **Proofs** → click **Reload** → toast “reloaded”.
+* **Status Lists** → **Refresh** → then **Set/Clear/Flip** → see success toasts.
+* **Verification** → paste a receipt and verify → see “valid/revoked” toasts.
+
+---
+
+You now have a clean, reusable toast system across the app. If you’d like a tiny **global error boundary** that also feeds into these toasts for unhandled exceptions, I can generate that wrapper too.
