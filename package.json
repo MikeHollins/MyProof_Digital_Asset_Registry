@@ -43,6 +43,7 @@
     "@radix-ui/react-tooltip": "^1.2.0",
     "@tanstack/react-query": "^5.60.5",
     "@types/ioredis": "^4.28.10",
+    "@types/swagger-ui-express": "^4.1.8",
     "@types/uuid": "^10.0.0",
     "argon2": "^0.44.0",
     "class-variance-authority": "^0.7.1",

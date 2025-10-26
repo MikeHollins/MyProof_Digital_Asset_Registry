@@ -5,6 +5,9 @@ import { setupVite, serveStatic, log } from "./vite";
 import helmet from "helmet";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import { createHash, randomBytes } from "crypto";
+import swaggerUi from "swagger-ui-express";
+import { readFileSync } from "fs";
+import { join } from "path";
 
 const app = express();
 
@@ -184,6 +187,32 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 });
 
 (async () => {
+  // Load OpenAPI specification
+  const openApiSpec = JSON.parse(
+    readFileSync(join(__dirname, "openapi.json"), "utf8")
+  );
+  
+  // Serve OpenAPI spec as JSON
+  app.get("/openapi.json", (_req, res) => {
+    res.json(openApiSpec);
+  });
+  
+  // Serve Swagger UI documentation
+  app.use(
+    "/docs",
+    swaggerUi.serve,
+    swaggerUi.setup(openApiSpec, {
+      customCss: ".swagger-ui .topbar { display: none }",
+      customSiteTitle: "Proof-Asset Registry API",
+      swaggerOptions: {
+        persistAuthorization: true,
+        displayRequestDuration: true,
+        filter: true,
+        tryItOutEnabled: true,
+      },
+    })
+  );
+  
   // Register main routes first (initializes receipt keys)
   const server = await registerRoutes(app);
   

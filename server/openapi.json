@@ -1,0 +1,1530 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Proof-Asset Registry (PAR) API",
+    "version": "1.0.0",
+    "description": "Privacy-first, enterprise-grade platform for secure registration, verification, and lifecycle management of cryptographic proofs. Supports zero-knowledge proofs, JSON Web Signatures, W3C-compliant credential status tracking, and append-only audit transparency.",
+    "contact": {
+      "name": "PAR Support",
+      "url": "https://github.com/your-org/proof-asset-registry"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5000",
+      "description": "Development server"
+    },
+    {
+      "url": "https://api.yourproofregistry.com",
+      "description": "Production server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Health",
+      "description": "System health and status endpoints"
+    },
+    {
+      "name": "Proof Assets",
+      "description": "Cryptographic proof registration and verification"
+    },
+    {
+      "name": "Status Lists",
+      "description": "W3C Bitstring Status List management"
+    },
+    {
+      "name": "Audit",
+      "description": "Cryptographically verifiable audit trail"
+    },
+    {
+      "name": "Partners",
+      "description": "Partner organization management (admin only)"
+    },
+    {
+      "name": "API Keys",
+      "description": "API key management (admin only)"
+    },
+    {
+      "name": "Analytics",
+      "description": "Usage analytics and statistics"
+    },
+    {
+      "name": "Transfers",
+      "description": "Proof asset ownership transfers"
+    },
+    {
+      "name": "Usage",
+      "description": "Proof asset usage tracking and receipts"
+    },
+    {
+      "name": "Webhooks",
+      "description": "Webhook subscription management (admin only)"
+    },
+    {
+      "name": "Demo",
+      "description": "Demo endpoints for testing (development only)"
+    }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Health check",
+        "description": "Returns system health status including database connection",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "System is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean", "example": true },
+                    "database": { "type": "string", "example": "connected" },
+                    "uptime": { "type": "number", "example": 12345 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Dashboard statistics",
+        "description": "Returns dashboard statistics for the system",
+        "operationId": "getStats",
+        "responses": {
+          "200": {
+            "description": "Dashboard statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "totalProofs": { "type": "integer" },
+                    "totalRevoked": { "type": "integer" },
+                    "totalAuditEvents": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proof-assets": {
+      "get": {
+        "tags": ["Proof Assets"],
+        "summary": "List all proof assets",
+        "description": "Retrieves all proof assets in the registry",
+        "operationId": "listProofAssets",
+        "security": [{ "ApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of proof assets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/ProofAsset" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Proof Assets"],
+        "summary": "Register a new proof asset",
+        "description": "Registers a new cryptographic proof asset with verification and receipt generation",
+        "operationId": "registerProofAsset",
+        "security": [{ "ApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ProofAssetCreate" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Proof asset registered successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean", "example": true },
+                    "proofAssetId": { "type": "string" },
+                    "commitment": { "type": "string" },
+                    "receipt": { "type": "string" },
+                    "statusRef": {
+                      "type": "object",
+                      "properties": {
+                        "statusListUrl": { "type": "string" },
+                        "statusListIndex": { "type": "string" },
+                        "statusPurpose": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proof-assets/recent": {
+      "get": {
+        "tags": ["Proof Assets"],
+        "summary": "Get recent proof assets",
+        "description": "Retrieves the 10 most recent proof assets",
+        "operationId": "getRecentProofAssets",
+        "security": [{ "ApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of recent proof assets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/ProofAsset" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proof-assets/{id}": {
+      "get": {
+        "tags": ["Proof Assets"],
+        "summary": "Get proof asset by ID",
+        "description": "Retrieves a single proof asset by its ID",
+        "operationId": "getProofAsset",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Proof asset ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Proof asset details",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProofAsset" }
+              }
+            }
+          },
+          "404": {
+            "description": "Proof asset not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proof-assets/{id}/verify": {
+      "post": {
+        "tags": ["Proof Assets"],
+        "summary": "Re-verify a proof asset",
+        "description": "Re-verifies a proof asset using either receipt-based verification (fast) or fresh proof verification (full)",
+        "operationId": "verifyProofAsset",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Proof asset ID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "receipt": { "type": "string", "description": "Signed JWS receipt for fast verification" },
+                  "requireFreshProof": { "type": "boolean", "description": "Force fresh proof re-verification" },
+                  "proof_uri": { "type": "string", "description": "URI to fetch proof for fresh verification" },
+                  "proof_bytes": { "type": "string", "format": "byte", "description": "Base64-encoded proof bytes" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "verdict": { "type": "string", "enum": ["valid", "invalid", "revoked", "suspended"] },
+                    "verifiedAt": { "type": "string", "format": "date-time" },
+                    "verificationPath": { "type": "string", "enum": ["receipt", "fresh_proof"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proof-assets/{id}/status": {
+      "get": {
+        "tags": ["Proof Assets"],
+        "summary": "Get proof asset status",
+        "description": "Retrieves the current verification status of a proof asset",
+        "operationId": "getProofAssetStatus",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "statusListUrl": { "type": "string" },
+                    "statusListIndex": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proof-assets/{id}/transfer": {
+      "post": {
+        "tags": ["Transfers"],
+        "summary": "Transfer proof asset ownership",
+        "description": "Transfers ownership of a proof asset to a new DID",
+        "operationId": "transferProofAsset",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["to_did"],
+                "properties": {
+                  "to_did": { "type": "string", "description": "Target DID for ownership transfer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transfer successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "assetId": { "type": "string" },
+                    "from_did": { "type": "string" },
+                    "to_did": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proof-assets/{id}/transfers": {
+      "get": {
+        "tags": ["Transfers"],
+        "summary": "Get transfer history",
+        "description": "Retrieves the complete transfer history for a proof asset",
+        "operationId": "getTransferHistory",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transfer history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "transfers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "transferId": { "type": "string" },
+                          "fromDid": { "type": "string" },
+                          "toDid": { "type": "string" },
+                          "transferredAt": { "type": "string", "format": "date-time" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proof-assets/{id}/use": {
+      "post": {
+        "tags": ["Usage"],
+        "summary": "Record proof asset usage",
+        "description": "Records a usage event and issues a signed usage receipt",
+        "operationId": "useProofAsset",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "audience": { "type": "string" },
+                  "nonce": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Usage recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "usageId": { "type": "string" },
+                    "usageReceipt": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proof-assets/{id}/usage": {
+      "get": {
+        "tags": ["Usage"],
+        "summary": "Get usage history",
+        "description": "Retrieves the usage history for a proof asset",
+        "operationId": "getUsageHistory",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "usage": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "usageId": { "type": "string" },
+                          "usedAt": { "type": "string", "format": "date-time" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit-events": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "Get audit events",
+        "description": "Retrieves audit events with hash-chain verification",
+        "operationId": "getAuditEvents",
+        "security": [{ "ApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of audit events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/AuditEvent" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit-events/verify-chain": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "Verify audit chain integrity",
+        "description": "Verifies the cryptographic integrity of the audit event hash chain",
+        "operationId": "verifyAuditChain",
+        "security": [{ "ApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Chain verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "valid": { "type": "boolean" },
+                    "eventsChecked": { "type": "integer" },
+                    "errors": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit/events": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "Search audit events",
+        "description": "Search and filter audit events with pagination",
+        "operationId": "searchAuditEvents",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Search query"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "default": 50, "maximum": 500 },
+            "description": "Maximum number of results"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "rows": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/AuditEvent" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit/root": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "Get Merkle root",
+        "description": "Returns the Merkle root hash of recent audit events",
+        "operationId": "getAuditRoot",
+        "security": [{ "ApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Merkle root",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "root": { "type": "string" },
+                    "count": { "type": "integer" },
+                    "algorithm": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit/proof/{eventId}": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "Get Merkle inclusion proof",
+        "description": "Returns a Merkle inclusion proof for a specific audit event",
+        "operationId": "getAuditProof",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Merkle inclusion proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "eventId": { "type": "string" },
+                    "leaf": { "type": "string" },
+                    "proof": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit/export.csv": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "Export audit events as CSV",
+        "description": "Exports recent audit events in CSV format",
+        "operationId": "exportAuditCSV",
+        "security": [{ "ApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "CSV export",
+            "content": {
+              "text/csv": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit/export.jsonld": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "Export audit events as JSON-LD",
+        "description": "Exports audit events in JSON-LD format with semantic context",
+        "operationId": "exportAuditJSONLD",
+        "security": [{ "ApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "JSON-LD export",
+            "content": {
+              "application/ld+json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status/lists/{purpose}/{listId}": {
+      "get": {
+        "tags": ["Status Lists"],
+        "summary": "Get W3C Bitstring Status List",
+        "description": "Retrieves a W3C-compliant Bitstring Status List for revocation or suspension checking",
+        "operationId": "getStatusList",
+        "parameters": [
+          {
+            "name": "purpose",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "enum": ["revocation", "suspension"] }
+          },
+          {
+            "name": "listId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": { "type": "string" },
+            "description": "ETag for conditional caching"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "@context": { "type": "array" },
+                    "id": { "type": "string" },
+                    "type": { "type": "string" },
+                    "credentialSubject": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string" },
+                        "type": { "type": "string" },
+                        "encodedList": { "type": "string" },
+                        "statusPurpose": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not modified (cached version is current)"
+          }
+        }
+      }
+    },
+    "/api/status-lists/{purpose}/update": {
+      "post": {
+        "tags": ["Status Lists"],
+        "summary": "Update status list bit",
+        "description": "Updates a bit in a W3C Bitstring Status List with optimistic concurrency control",
+        "operationId": "updateStatusList",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "purpose",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "enum": ["revocation", "suspension"] }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "schema": { "type": "string" },
+            "description": "ETag for optimistic locking"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["statusListUrl", "index", "value"],
+                "properties": {
+                  "statusListUrl": { "type": "string" },
+                  "index": { "type": "integer" },
+                  "value": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Status list updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "etag": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict - ETag mismatch",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ConflictError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/bootstrap": {
+      "post": {
+        "tags": ["API Keys"],
+        "summary": "Bootstrap admin API key",
+        "description": "Creates the first admin API key (development only)",
+        "operationId": "bootstrapAdmin",
+        "responses": {
+          "200": {
+            "description": "Admin key created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "token": { "type": "string" },
+                    "keyId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/partners": {
+      "get": {
+        "tags": ["Partners"],
+        "summary": "List partners",
+        "description": "Lists all partner organizations",
+        "operationId": "listPartners",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of partners",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "partners": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Partner" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Partners"],
+        "summary": "Create partner",
+        "description": "Creates a new partner organization",
+        "operationId": "createPartner",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "contactEmail": { "type": "string", "format": "email" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Partner created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "partner": { "$ref": "#/components/schemas/Partner" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/api-keys/issue": {
+      "post": {
+        "tags": ["API Keys"],
+        "summary": "Issue API key",
+        "description": "Issues a new API key for a partner",
+        "operationId": "issueApiKey",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["partnerId", "scopes"],
+                "properties": {
+                  "partnerId": { "type": "string" },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": ["assets:mint", "assets:read", "status:update", "transfer:execute", "audit:read", "admin:*"]
+                    }
+                  },
+                  "notAfter": { "type": "string", "format": "date-time" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "API key issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "token": { "type": "string", "description": "Full API key (shown only once)" },
+                    "keyId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/api-keys": {
+      "get": {
+        "tags": ["API Keys"],
+        "summary": "List API keys",
+        "description": "Lists all API keys (secrets redacted)",
+        "operationId": "listApiKeys",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of API keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "keys": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ApiKey" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/api-keys/{keyId}/revoke": {
+      "post": {
+        "tags": ["API Keys"],
+        "summary": "Revoke API key",
+        "description": "Revokes an API key",
+        "operationId": "revokeApiKey",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "keyId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "API key revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/api-keys/{keyId}/rotate": {
+      "post": {
+        "tags": ["API Keys"],
+        "summary": "Rotate API key",
+        "description": "Rotates an API key (revokes old, issues new)",
+        "operationId": "rotateApiKey",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "keyId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "API key rotated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "token": { "type": "string" },
+                    "keyId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/analytics/overview": {
+      "get": {
+        "tags": ["Analytics"],
+        "summary": "Get system analytics",
+        "description": "Returns system-wide analytics and usage statistics",
+        "operationId": "getSystemAnalytics",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Analytics overview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "assets": { "type": "integer" },
+                        "revoked": { "type": "integer" },
+                        "uses": { "type": "integer" }
+                      }
+                    },
+                    "byDay": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "day": { "type": "string", "format": "date-time" },
+                          "count": { "type": "integer" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/partner/overview": {
+      "get": {
+        "tags": ["Analytics"],
+        "summary": "Get partner analytics",
+        "description": "Returns analytics for a specific partner",
+        "operationId": "getPartnerAnalytics",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "partner_id",
+            "in": "query",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Partner analytics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "assets": { "type": "integer" },
+                    "usages": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/webhooks": {
+      "get": {
+        "tags": ["Webhooks"],
+        "summary": "List webhooks",
+        "description": "Lists all webhook subscriptions",
+        "operationId": "listWebhooks",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "partner_id",
+            "in": "query",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "webhooks": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Webhook" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Webhooks"],
+        "summary": "Create webhook",
+        "description": "Creates a new webhook subscription",
+        "operationId": "createWebhook",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["partnerId", "url", "event_types"],
+                "properties": {
+                  "partnerId": { "type": "string" },
+                  "url": { "type": "string", "format": "uri" },
+                  "event_types": {
+                    "type": "array",
+                    "items": { "type": "string", "enum": ["proof.registered", "proof.verified", "proof.revoked", "proof.transferred", "proof.used"] }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Webhook created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "webhook": { "$ref": "#/components/schemas/Webhook" },
+                    "secret": { "type": "string", "description": "Webhook signing secret (shown only once)" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/webhooks/{id}": {
+      "get": {
+        "tags": ["Webhooks"],
+        "summary": "Get webhook details",
+        "description": "Retrieves details of a specific webhook",
+        "operationId": "getWebhook",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "webhook": { "$ref": "#/components/schemas/Webhook" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["Webhooks"],
+        "summary": "Update webhook",
+        "description": "Updates a webhook subscription",
+        "operationId": "updateWebhook",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": { "type": "string", "format": "uri" },
+                  "event_types": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Webhook updated"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Webhooks"],
+        "summary": "Delete webhook",
+        "description": "Deletes a webhook subscription",
+        "operationId": "deleteWebhook",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook deleted"
+          }
+        }
+      }
+    },
+    "/api/admin/webhooks/{id}/disable": {
+      "post": {
+        "tags": ["Webhooks"],
+        "summary": "Disable webhook",
+        "description": "Disables a webhook subscription",
+        "operationId": "disableWebhook",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook disabled"
+          }
+        }
+      }
+    },
+    "/api/admin/webhooks/{id}/deliveries": {
+      "get": {
+        "tags": ["Webhooks"],
+        "summary": "Get webhook deliveries",
+        "description": "Lists delivery attempts for a webhook",
+        "operationId": "getWebhookDeliveries",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Delivery history"
+          }
+        }
+      }
+    },
+    "/api/admin/webhooks/deliveries/failed": {
+      "get": {
+        "tags": ["Webhooks"],
+        "summary": "Get failed webhook deliveries",
+        "description": "Lists all failed webhook deliveries across all webhooks",
+        "operationId": "getFailedDeliveries",
+        "security": [{ "AdminApiKeyAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Failed deliveries"
+          }
+        }
+      }
+    },
+    "/api/demo/seed": {
+      "post": {
+        "tags": ["Demo"],
+        "summary": "Seed demo data",
+        "description": "Creates a demo proof asset for testing (development only)",
+        "operationId": "seedDemo",
+        "responses": {
+          "200": {
+            "description": "Demo asset created"
+          }
+        }
+      }
+    },
+    "/api/demo/revoke": {
+      "post": {
+        "tags": ["Demo"],
+        "summary": "Revoke demo asset",
+        "description": "Revokes the demo proof asset (development only)",
+        "operationId": "revokeDemo",
+        "responses": {
+          "200": {
+            "description": "Demo asset revoked"
+          }
+        }
+      }
+    },
+    "/api/demo/reset": {
+      "post": {
+        "tags": ["Demo"],
+        "summary": "Reset demo asset",
+        "description": "Resets the demo proof asset to valid status (development only)",
+        "operationId": "resetDemo",
+        "responses": {
+          "200": {
+            "description": "Demo asset reset"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key authentication for partners. Format: `{keyId}.{secret}` or `ApiKey {keyId}.{secret}` in Authorization header."
+      },
+      "AdminApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "Admin API key authentication. Requires `admin:*` scope. Format: `ApiKey {keyId}.{secret}`"
+      }
+    },
+    "schemas": {
+      "ProofAsset": {
+        "type": "object",
+        "properties": {
+          "proofAssetId": { "type": "string" },
+          "partnerId": { "type": "string" },
+          "issuerDid": { "type": "string" },
+          "verifierDid": { "type": "string" },
+          "proofFormat": { "type": "string", "enum": ["jws", "zk-snark", "bbs+"] },
+          "proofDigest": { "type": "string" },
+          "digestAlg": { "type": "string" },
+          "policyHash": { "type": "string" },
+          "constraintHash": { "type": "string" },
+          "commitment": { "type": "string" },
+          "statusListUrl": { "type": "string" },
+          "statusListIndex": { "type": "string" },
+          "statusPurpose": { "type": "string" },
+          "verificationStatus": { "type": "string" },
+          "verifierProofRef": { "type": "string", "nullable": true },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "verifiedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ProofAssetCreate": {
+        "type": "object",
+        "required": ["issuer_did", "verifier_did", "proof_format", "proof_digest", "digest_alg", "policy_hash", "constraint_hash"],
+        "properties": {
+          "issuer_did": { "type": "string", "description": "DID of proof issuer" },
+          "verifier_did": { "type": "string", "description": "DID of verifier" },
+          "proof_format": { "type": "string", "enum": ["jws", "zk-snark", "bbs+"] },
+          "proof_digest": { "type": "string", "description": "Cryptographic digest of proof bytes" },
+          "digest_alg": { "type": "string", "enum": ["sha2-256", "sha3-256", "blake3", "multihash"] },
+          "policy_hash": { "type": "string", "description": "Hash of verification policy" },
+          "constraint_hash": { "type": "string", "description": "Hash of verification constraints" },
+          "proof_uri": { "type": "string", "description": "URI to fetch proof for verification" },
+          "proof_bytes": { "type": "string", "format": "byte", "description": "Base64-encoded proof bytes" }
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "properties": {
+          "eventId": { "type": "string" },
+          "eventType": { "type": "string" },
+          "assetId": { "type": "string" },
+          "payload": { "type": "object" },
+          "eventHash": { "type": "string" },
+          "previousHash": { "type": "string", "nullable": true },
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Partner": {
+        "type": "object",
+        "properties": {
+          "partnerId": { "type": "string" },
+          "name": { "type": "string" },
+          "contactEmail": { "type": "string", "format": "email", "nullable": true },
+          "active": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ApiKey": {
+        "type": "object",
+        "properties": {
+          "keyId": { "type": "string" },
+          "partnerId": { "type": "string" },
+          "scopes": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "revoked"] },
+          "notBefore": { "type": "string", "format": "date-time", "nullable": true },
+          "notAfter": { "type": "string", "format": "date-time", "nullable": true },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "lastUsedAt": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "Webhook": {
+        "type": "object",
+        "properties": {
+          "webhookId": { "type": "string" },
+          "partnerId": { "type": "string" },
+          "url": { "type": "string", "format": "uri" },
+          "eventTypes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "active": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      },
+      "ConflictError": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean", "example": false },
+          "error": { "type": "string", "example": "conflict" },
+          "code": { "type": "string", "example": "ETAG_MISMATCH" },
+          "detail": { "type": "string" },
+          "trace_id": { "type": "string" },
+          "current_etag": { "type": "string" }
+        }
+      }
+    }
+  }
+}
