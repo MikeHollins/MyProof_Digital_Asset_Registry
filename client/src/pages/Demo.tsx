@@ -155,17 +155,13 @@ export default function Demo() {
           statusVerdict: "revoked",
         });
         setStep("verified_revoked");
-        toast({
-          title: "Security Working Correctly! ✓",
-          description: "Replay protection prevented receipt reuse. The asset also remains revoked.",
-        });
-      } else {
-        toast({
-          title: "Verification Failed",
-          description: errorMsg,
-          variant: "destructive",
-        });
       }
+      // Show red error toast for all verification failures (including expected replay)
+      toast({
+        title: "Verification Failed",
+        description: errorMsg,
+        variant: "destructive",
+      });
     },
   });
 
