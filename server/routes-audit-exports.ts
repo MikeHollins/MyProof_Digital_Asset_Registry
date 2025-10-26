@@ -158,6 +158,94 @@ export function registerAuditExports(app: Express) {
       });
     }
   });
+
+  /**
+   * GET /api/audit/export.csv
+   * 
+   * Export recent audit events as CSV file.
+   * Provides downloadable CSV with event_id, event_type, asset_id, created_at.
+   * 
+   * @returns CSV file with audit events (max 5000)
+   */
+  app.get("/api/audit/export.csv", async (_req: Request, res: Response) => {
+    try {
+      const result = await db.execute(
+        `SELECT event_id, event_type, asset_id, timestamp AS created_at 
+         FROM audit_events 
+         ORDER BY timestamp DESC 
+         LIMIT 5000`
+      );
+
+      const rows = result.rows || [];
+      
+      // Build CSV with header
+      const header = "event_id,event_type,asset_id,created_at\n";
+      const csvRows = rows.map((row: any) => {
+        return [
+          escapeCsvField(row.event_id),
+          escapeCsvField(row.event_type),
+          escapeCsvField(row.asset_id),
+          escapeCsvField(row.created_at)
+        ].join(',');
+      }).join("\n");
+      
+      const csv = header + csvRows;
+      
+      // Set response headers
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", 'attachment; filename="audit-events.csv"');
+      
+      return res.send(csv);
+    } catch (error: any) {
+      return res.status(500).json({
+        error: "Failed to export audit events as CSV",
+        detail: error.message,
+      });
+    }
+  });
+
+  /**
+   * GET /api/audit/export.jsonld
+   * 
+   * Export recent audit events as JSON-LD.
+   * Provides linked data format with semantic context for audit events.
+   * 
+   * @returns JSON-LD document with audit events (max 5000)
+   */
+  app.get("/api/audit/export.jsonld", async (_req: Request, res: Response) => {
+    try {
+      const result = await db.execute(
+        `SELECT event_id, event_type, asset_id, payload, timestamp AS created_at 
+         FROM audit_events 
+         ORDER BY timestamp DESC 
+         LIMIT 5000`
+      );
+
+      const rows = result.rows || [];
+      
+      // Build JSON-LD structure
+      const jsonld = {
+        "@context": {
+          "@vocab": "https://myproof.ai/terms#",
+          "event_id": "id",
+          "event_type": "type",
+          "asset_id": "asset",
+          "created_at": "issuedAt"
+        },
+        "events": rows
+      };
+      
+      // Set Content-Type header
+      res.setHeader("Content-Type", "application/ld+json");
+      
+      return res.json(jsonld);
+    } catch (error: any) {
+      return res.status(500).json({
+        error: "Failed to export audit events as JSON-LD",
+        detail: error.message,
+      });
+    }
+  });
 }
 
 /**
@@ -170,4 +258,19 @@ function safePreview(payload: any, max = 120): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Helper: Escape CSV field value
+ * Wraps values containing commas, quotes, or newlines in quotes
+ * and escapes internal quotes by doubling them
+ */
+function escapeCsvField(value: any): string {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+  // If contains comma, quote, or newline, wrap in quotes and escape internal quotes
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return '"' + str.replace(/"/g, '""') + '"';
+  }
+  return str;
 }

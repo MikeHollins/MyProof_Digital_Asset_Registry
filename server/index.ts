@@ -204,6 +204,11 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   const { registerWebhookRoutes } = await import("./routes-webhooks");
   registerWebhookRoutes(app);
 
+  // Register analytics routes (Admin and Partner analytics)
+  const { registerAnalyticsRoutes, registerPartnerRoutes } = await import("./routes-analytics");
+  registerAnalyticsRoutes(app);
+  registerPartnerRoutes(app);
+
   // Error handling middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
