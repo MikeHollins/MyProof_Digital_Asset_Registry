@@ -64,7 +64,7 @@ export const statusLists = pgTable("status_lists", {
   listId: varchar("list_id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
   purpose: text("purpose").notNull(),
   url: text("url").notNull().unique(),
-  bitstring: text("bitstring").notNull(), // Base64-encoded bitstring
+  bitstring: text("bitstring").notNull(), // Base64-encoded gzipped bitstring
   size: bigint("size", { mode: "number" }).notNull(),
   etag: text("etag"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
