@@ -1,0 +1,268 @@
+This is excellent progress. Nothing you showed is wrong—in fact, you’ve already internalized a lot of “production habits” (structured errors, parameterized SQL, privacy-first exports, partner scoping). Below are my hardening suggestions and drop-in upgrades to make your agent’s execution even more resilient, secure, and demo-proof under load and restarts.
+
+🔴 High-priority improvements (apply these first)
+1) IPFS fetch: streaming hash + multi-gateway fallback + bounded memory
+
+Why: your new function is safe, but it still buffers the entire file; larger artifacts can exhaust memory and you’re not validating the CID against the content.
+
+Drop-in replacement (backend/src/services/ipfs.ts):
+
+import { create } from "ipfs-http-client";
+import { createHash } from "node:crypto";
+
+const GATEWAYS = [
+  process.env.IPFS_API?.replace(/\/+$/, '') || "http://127.0.0.1:5001",
+  "https://ipfs.io/api/v0",
+  "https://cloudflare-ipfs.com/api/v0"
+];
+
+function makeClient(url: string) {
+  return create({ url });
+}
+
+export async function fetchFromIPFS(cid: string): Promise<{
+  ok: boolean; data?: Buffer; error?: string; code?: string;
+}> {
+  const MAX = 2 * 1024 * 1024;    // 2MB safety cap for demo; tune as needed
+  for (const gw of GATEWAYS) {
+    try {
+      const ipfs = makeClient(gw);
+      const hasher = createHash('sha256'); // stream to hash
+      let total = 0;
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of ipfs.cat(cid)) {
+        total += chunk.byteLength;
+        if (total > MAX) return { ok:false, error:"content_too_large", code:"IPFS_SIZE_CAP" };
+        hasher.update(chunk);
+        chunks.push(chunk);
+      }
+      // (Optional) verify the CID if you have multihash->sha256 mapping logic,
+      // or trust the gateway for now and rely on CID pinning during add.
+      return { ok:true, data: Buffer.concat(chunks) };
+    } catch (e:any) {
+      console.error(`[ipfs] ${gw} fetch failed:`, e.message);
+      // try next gateway
+    }
+  }
+  return { ok:false, error:"All IPFS gateways failed", code:"IPFS_FETCH_FAILED" };
+}
+
+
+API usage stays the same; memory is bounded and you get gateway resilience.
+
+2) DID resolution: timeouts + method allow-list + cache
+
+Why: prevents slow DID networks from stalling requests, and blocks methods you don’t support in v1.
+
+Upgrade (backend/src/services/did.ts):
+
+import { Resolver } from "did-resolver";
+import { getResolver as ethrGetResolver } from "ethr-did-resolver";
+import { getResolver as webGetResolver } from "web-did-resolver";
+
+const ethr = ethrGetResolver({});
+const web  = webGetResolver();
+
+const resolver = new Resolver({ ...ethr, ...web });
+const ALLOWED_METHODS = new Set(['did:web','did:ethr']); // v1 allow-list
+const CACHE = new Map<string, { doc:any; ts:number }>();
+const TTL_MS = 10 * 60 * 1000;
+
+export async function resolveDIDWithTimeout(did: string, timeoutMs = 3000) {
+  if (!did.startsWith('did:')) return { ok:false, code:'INVALID_DID', error:'Invalid DID format' };
+  const method = did.split(':').slice(0,2).join(':');
+  if (!ALLOWED_METHODS.has(method)) return { ok:false, code:'METHOD_NOT_SUPPORTED', error:'Method not supported' };
+
+  const cached = CACHE.get(did);
+  if (cached && Date.now() - cached.ts < TTL_MS) return { ok:true, document: cached.doc };
+
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const result = await resolver.resolve(did, { signal: controller.signal as any });
+    if (result.didResolutionMetadata.error) {
+      return { ok:false, code:'RESOLUTION_FAILED', error: result.didResolutionMetadata.error };
+    }
+    CACHE.set(did, { doc: result.didDocument, ts: Date.now() });
+    return { ok:true, document: result.didDocument };
+  } catch (e:any) {
+    console.error('[did] resolution failed:', e.message);
+    return { ok:false, code:'RESOLUTION_FAILED', error:'DID resolution failed' };
+  } finally { clearTimeout(t); }
+}
+
+
+Optional: enforce a minimum set of verification methods (e.g., assertionMethod) and pin DID documents per partner for extra trust.
+
+3) Webhooks: HMAC signature + timestamp + replay prevention + backoff
+
+Your SQL injection fix is good. Add signed deliveries and replay defense:
+
+Signing & header (sender):
+
+function signBody(secret: string, body: string, ts: number) {
+  const base = `${ts}.${body}`;
+  const sig = crypto.createHmac("sha256", secret).update(base).digest("hex");
+  return { base, sig, ts };
+}
+
+// delivery
+const ts = Math.floor(Date.now()/1000);
+const body = JSON.stringify({ type:eventType, data:payload, ts });
+const { sig } = signBody(webhook.secret, body, ts);
+
+await fetch(webhook.url, {
+  method: "POST",
+  headers: {
+    "Content-Type":"application/json",
+    "X-MyProof-Timestamp": String(ts),
+    "X-MyProof-Signature": sig
+  },
+  body
+});
+
+
+Receiver verification (doc it for partners):
+
+Recompute HMAC(secret, timestamp + "." + body) and compare to header.
+
+Reject if timestamp is older than 5 minutes (replay defense).
+
+Reject if delivery_id (if you include one) was seen before (store short-lived).
+
+Retry/backoff:
+
+Add fields next_attempt_at and backoff_ms to webhook_deliveries.
+
+Retry schedule: 1s, 5s, 30s, 2m with jitter.
+
+A small cron/worker scans status NOT in 2xx and now() >= next_attempt_at.
+
+Limit concurrency: cap deliveries per webhook to avoid thundering herd.
+
+4) Tenant isolation: enforce in DB too (RLS or constraints)
+
+You added partner_id and filtered routes—great. Also enforce on DB:
+
+Postgres Row-Level Security example (optional but strong):
+
+ALTER TABLE proof_assets ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY partner_isolation ON proof_assets
+  USING (partner_id::text = current_setting('app.partner_id', true));
+
+-- In request lifecycle, set:
+-- SELECT set_config('app.partner_id', '<PARTNER_UUID>', true);
+
+
+If RLS is heavy for now, keep strict code enforcement: derive partnerId exclusively from the verified API key context, never from the body.
+
+5) Status lists: optimistic concurrency on updates (If-Match)
+
+You already compute etag; add If-Match to prevent races:
+
+Client (UI)
+
+await fetch(`/api/status-lists/${purpose}/update`, {
+  method: 'POST',
+  headers: { 'Content-Type':'application/json', 'If-Match': currentEtag, ...authHeader() },
+  body: JSON.stringify({ statusListUrl: url, operations })
+});
+
+
+Server: return 409 if If-Match does not equal current etag before write. (You can add a condition WHERE url=$url AND etag=$ifMatch and check rowCount.)
+
+🟠 Medium-priority enhancements
+6) OpenAPI & SDK generation
+
+Add /docs (Swagger UI) and /openapi.json.
+
+Generate a typed SDK for partners: pnpm dlx openapi-typescript ./backend/openapi/par-api.yaml -o ./client/sdk/par.d.ts
+
+Include Postman collection for quick dev onboarding.
+
+7) Analytics & dashboards
+
+Instrument webhook success rate, P95 re-verify latency, status list updates, and usage counts by partner.
+
+A simple /api/admin/analytics/overview route (we provided in Phase 3) and a charts card on the dashboard.
+
+8) Canonical error shape (everywhere)
+
+You’re already close. Normalize every thrown error into:
+
+{ ok: false, error: 'Human-readable', code: 'MACHINE_CODE', detail?: string }
+
+
+Return code to clients; keep detail for logs only.
+
+9) Observability: request IDs + traces
+
+Add a per-request trace_id and include it in all log lines for correlation.
+
+(Optional) OpenTelemetry exporter for traces/metrics later.
+
+🟢 Nice-to-haves (future)
+
+Signer key attestation (TEE/HSM) and JWKS health view.
+
+Policy provenance (store the CID, fetched IPFS doc digest, and policy version meta).
+
+CSV/JSON-LD export filters (date ranges, event type, partner).
+
+✍️ Concrete code nits in your examples
+
+Webhook “failed deliveries” listing
+Add tenant scoping (admin-only is fine, but if you show to partners, filter by partner_id) and truncate last_error_message to prevent log injection in UIs:
+
+SELECT
+  w.id, w.event_type, w.target_url, w.retry_count,
+  LEFT(w.last_error_message, 400) AS last_error_message,
+  w.last_attempted_at, w.created_at
+FROM webhooks w
+WHERE w.status = 'failed'
+ORDER BY w.last_attempted_at DESC
+LIMIT 100;
+
+
+IPFS fetch error codes
+Return the gateway URL that failed last for easier debugging:
+
+return { ok:false, error:`All IPFS gateways failed (last: ${lastGw})`, code:"IPFS_FETCH_FAILED" };
+
+
+DID resolution logging
+You did the right thing—log error.message only. Also log the DID method to spot patterns:
+
+console.error('[did]', method, 'failed:', error.message);
+
+
+Analytics queries
+Add indexes you’ll need:
+
+CREATE INDEX IF NOT EXISTS ix_proof_assets_partner_status ON proof_assets (partner_id, verification_status);
+CREATE INDEX IF NOT EXISTS ix_audit_events_created ON audit_events (created_at);
+
+✅ What you already nailed (keep doing this)
+
+Structured errors and no raw stack traces in APIs.
+
+Parameterized SQL (replace any string-concats throughout).
+
+Privacy-first exports (payload redaction).
+
+Partner isolation via partner_id in routes + indexes.
+
+Fail-safe defaults when external services fail (IPFS, DID).
+
+🧪 Mini test checklist for these changes
+
+IPFS: simulate 1st gateway down; verify fallback; assert memory cap returns IPFS_SIZE_CAP.
+
+DID: method not allowed → METHOD_NOT_SUPPORTED; DNS failure → RESOLUTION_FAILED.
+
+Webhooks: signature verifies on receiver; timestamps older than 5 min → reject; retry schedule honored; DLQ view lists failures.
+
+Status lists: If-Match mismatch returns 409; double writer test.
+
+Tenant isolation: attempt to read another partner’s asset → 403/404.
