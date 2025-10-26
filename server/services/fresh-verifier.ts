@@ -1,4 +1,5 @@
 import { jwtVerify, decodeProtectedHeader } from "jose";
+import { verifyZk, type ZkFormat } from "./zkVerifier.js";
 
 /**
  * Fresh-proof verification service
@@ -80,33 +81,55 @@ async function verifyVcJwt(bytes: Uint8Array): Promise<VerifyResult> {
 }
 
 /**
- * Verify ZK_PROOF
+ * Verify ZK_PROOF using snarkjs
  * 
- * Phase 2: Stub to ok:true
- * Phase 3: Call snarkjs.groth16.verify with vKey if available
+ * Expected JSON payload format:
+ * {
+ *   "system": "GROTH16" | "PLONK",
+ *   "vKey": {...},           // verification key
+ *   "publicSignals": [...],  // public inputs
+ *   "proof": {...}           // proof object
+ * }
  */
 async function verifyZkProof(bytes: Uint8Array): Promise<VerifyResult> {
   try {
     // Parse as JSON proof object
     const txt = Buffer.from(bytes).toString("utf8");
-    const proof = JSON.parse(txt);
+    const payload = JSON.parse(txt);
 
-    // Basic validation: ensure it has proof structure
-    if (!proof || typeof proof !== "object") {
+    // Validate required fields
+    if (!payload || typeof payload !== "object") {
       return { ok: false, reason: "invalid_proof_structure" };
     }
 
-    // Phase 2: Stub verification
-    // Phase 3: Call snarkjs verification
-    // const vKey = await loadVerificationKey(proof.circuitId);
-    // const publicSignals = proof.publicSignals || [];
-    // const valid = await snarkjs.groth16.verify(vKey, publicSignals, proof.proof);
+    if (!payload.system || !payload.vKey || !payload.publicSignals || !payload.proof) {
+      return { ok: false, reason: "zk_payload_missing_fields" };
+    }
+
+    // Validate system type
+    const validSystems: ZkFormat[] = ["GROTH16", "PLONK"];
+    if (!validSystems.includes(payload.system)) {
+      return { ok: false, reason: "unsupported_zk_system" };
+    }
+
+    // Perform actual ZK verification using snarkjs
+    const result = await verifyZk(
+      payload.system as ZkFormat,
+      payload.vKey,
+      payload.publicSignals,
+      payload.proof
+    );
+
+    if (!result.ok) {
+      return { ok: false, reason: result.reason };
+    }
 
     return {
       ok: true,
       metadata: {
-        verified: "stub",
-        note: "Phase 3 will add full snarkjs verification",
+        system: payload.system,
+        verified: "snarkjs",
+        publicSignalsCount: payload.publicSignals.length,
       },
     };
   } catch (e: any) {

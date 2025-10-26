@@ -200,6 +200,10 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   const { registerUsageRoutes } = await import("./routes-usage");
   registerUsageRoutes(app);
 
+  // Register webhook routes (Partner event notifications)
+  const { registerWebhookRoutes } = await import("./routes-webhooks");
+  registerWebhookRoutes(app);
+
   // Error handling middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
