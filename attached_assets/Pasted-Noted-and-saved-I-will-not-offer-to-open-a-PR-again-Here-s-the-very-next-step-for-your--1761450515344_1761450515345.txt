@@ -1,0 +1,226 @@
+Noted and saved: **I will not offer to open a PR again.**
+
+Here’s the **very next step** for your Replit agent to move into **Phase 2 & Phase 3**. It’s an ordered, copy-and-paste checklist with exact files, patches, and smoke checks so the agent can execute without guessing.
+
+---
+
+## ✅ Phase 2 — Fresh-Proof, Merkle Audit, Tests (execute in order)
+
+### 1) Fresh-Proof Re-verification (SRI + caps + discard)
+
+**Goal:** If `requireFreshProof=true`, accept `proof_uri` (HTTPS on allowlist, SRI digest pin, 3s timeout, 128KB cap) **or** `proof_bytes` (base64url). Verify by format (start with `VC_JWT` + `ZK_PROOF`), then **discard bytes**.
+
+* **Create:** `backend/src/utils/sri.ts`
+  (SRI fetcher with ALLOW_HTTPS_HOSTS, TIMEOUT, MAX_BYTES; `decodeB64u`)
+
+* **Create:** `backend/src/services/freshVerifier.ts`
+  (Phase 2: stub `ZK_PROOF` ok; check JWT shape for `VC_JWT`)
+
+* **Patch:** `backend/src/routes/reverify.ts`
+
+  * Extend Zod body: `requireFreshProof`, `proof_uri`, `proof_bytes`
+  * After fast-path checks, if `mustFresh`: load bytes via SRI or base64url → call `verifyFreshProof(format, bytes)` → reject on failure → **ensure no storage** of bytes.
+
+* **Config:** add host(s) to allowlist inside `sri.ts`:
+
+  ```ts
+  const ALLOW_HTTPS_HOSTS = new Set(["localhost:8080","cdn.myproof.ai"]);
+  ```
+
+**Smoke:**
+
+* On Verification page, add a checkbox **“Require Fresh Proof”** and inputs for `proof_uri` OR `proof_bytes`.
+* Verify “valid” flows when fresh proof is provided; “rejected fresh_proof_required” when missing.
+
+---
+
+### 2) Merkle Audit Transparency (root + inclusion proofs)
+
+**Goal:** API to return **current Merkle root** over last 10k audit events and **inclusion proofs** for a given `event_id`.
+
+* **Create:** `backend/src/services/merkle.ts`
+  (leaf hash = SHA-256(JSON), `merkleRoot(leaves)`, `merkleProof(leaves, idx)`)
+
+* **Create:** `backend/src/routes/auditExports.ts`
+
+  * `GET /api/audit/root` → `{count, root(hex)}`
+  * `GET /api/audit/proof/:eventId` → `{eventIndex, root, proof[]}`
+
+* **DB (if missing):**
+
+  ```sql
+  CREATE TABLE IF NOT EXISTS merkle_snapshots (
+    snapshot_id BIGSERIAL PRIMARY KEY,
+    tree_size BIGINT NOT NULL,
+    root_hash BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  ```
+
+  *(Snapshots optional for Phase 2; computing on the fly is fine.)*
+
+* **Mount:** in `backend/src/server.ts`:
+
+  ```ts
+  import { registerAuditExports } from "./routes/auditExports";
+  registerAuditExports(app);
+  ```
+
+**Smoke:**
+
+* `GET /api/audit/root` → shows `count` and `root` (hex)
+* `GET /api/audit/proof/<event_id>` → returns hex `root` + proof array (hex)
+
+**UI (optional quick patch on Audit Logs page):**
+
+* Add two small forms: “Get Root” button and “Get Proof by event_id”.
+
+---
+
+### 3) Tests (Vitest) — smoke level now
+
+**Create:** `backend/src/tests/reverify.spec.ts` and `backend/src/tests/status.spec.ts` (as stubs to confirm strictness, fail-closed, bit flips).
+Run:
+
+```bash
+pnpm test
+```
+
+---
+
+## ✅ Phase 3 — Transfers, Usage Receipts, Signer Rotation, Docs
+
+### 4) Transfer / Provenance (MVP)
+
+**Goal:** Allow an operator (or authorized partner) to **transfer** asset ownership (`issuer_did`) and persist provenance.
+
+* **DB:**
+
+  ```sql
+  CREATE TABLE IF NOT EXISTS asset_transfers (
+    transfer_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_id UUID NOT NULL,
+    from_did TEXT NOT NULL,
+    to_did TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  ```
+
+* **Create:** `backend/src/routes/transfer.ts`
+
+  * `POST /api/proof-assets/:id/transfer` (scope: `transfer:execute`)
+  * Updates `issuer_did` and inserts provenance row; **appendAudit** `TRANSFER`.
+
+* **Mount:**
+
+  ```ts
+  import { registerTransferRoutes } from "./routes/transfer";
+  registerTransferRoutes(app);
+  ```
+
+**Smoke:** call transfer → verify DB update + audit entry.
+
+---
+
+### 5) License / Usage Tracking + Usage Receipts
+
+**Goal:** Enforce a simple `permitted_use_count` if present and return a **signed usage receipt (JWS)** for each `/use`.
+
+* **DB:**
+
+  ```sql
+  CREATE TABLE IF NOT EXISTS asset_usage (
+    usage_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_id UUID NOT NULL,
+    used_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  ```
+
+* **Create:** `backend/src/routes/usage.ts`
+
+  * `POST /api/proof-assets/:id/use` → increment usage, enforce `permitted_use_count` if set, **appendAudit** `USE`, return `usage_receipt` (dev signer JWS).
+
+* **Mount:**
+
+  ```ts
+  import { registerUsageRoutes } from "./routes/usage";
+  registerUsageRoutes(app);
+  ```
+
+**Smoke:** do `/use` → get `usage_receipt` → audit event appears.
+
+---
+
+### 6) Receipt-Signer Rotation (Dev UI)
+
+**Goal:** In dev, manage **receipt signer** (not partner API keys). In prod, this should call your separate verifier service.
+
+* **Create:** `backend/src/routes/receiptSigner.ts`
+
+  * `GET /api/admin/receipt-signer`
+  * `POST /api/admin/receipt-signer/rotate`
+    *(dev only, gated by `NODE_ENV !== 'production'` and `admin:*` token)*
+
+* **Mount:**
+
+  ```ts
+  import { registerReceiptSignerRoutes } from "./routes/receiptSigner";
+  registerReceiptSignerRoutes(app);
+  ```
+
+* **UI:** In **API Keys / Rotation** page, add a sub-panel for “Receipt Signer”:
+
+  * Show `currentKid`, `alg`, `createdAt`; a **Rotate** button.
+
+---
+
+### 7) Docs stubs (Markdown)
+
+**Create** under `/docs`:
+
+* `partner-onboarding.md` — API keys, scopes, sample calls
+* `client-integration.md` — receipts, status checks, verdicts
+* `audit-model.md` — root & inclusion proof usage
+* `DPIA-template.md`, `ROPA-register.md` — privacy posture (zero PII), flows, retention
+
+*(I can generate content for these on request.)*
+
+---
+
+## 🔒 Security consistency checks (apply now)
+
+* **JOSE allow-list** (keep `ES256` for receipts now), `typ='JWT'`, `no crit`, enforce `aud/nbf/exp`, DB-backed `jti`.
+* **Status lists**: **fail-closed** on staleness/unavailable; DB‐backed; `ETag` + `gzip`.
+* **SRI**: allowlist hosts; timeout 3s; 128KB cap; **discard** proof bytes after fresh verification.
+* **API Keys**: Argon2id + pepper; one-time token display; scopes; rate-limit by keyId + IP.
+* **RFC 8785**: canonicalize all hashed JSON.
+* **Logging**: redact `Authorization`, `X-API-Key`, tokens; do not log proof bytes or private keys.
+
+---
+
+## 🧪 Final Smoke
+
+1. **Fresh path**: On Verification page → check **Require Fresh Proof** → provide `proof_uri` (allowlisted) or `proof_bytes` → expect **valid**; missing proof → **rejected**.
+2. **Merkle**: `GET /api/audit/root` + `GET /api/audit/proof/:eventId` → returns root + inclusion proof.
+3. **Transfer**: POST `/api/proof-assets/:id/transfer` → owner DID changed; audit event present.
+4. **Usage**: POST `/api/proof-assets/:id/use` → gets `usage_receipt` JWS; audit event present.
+5. **Signer (dev)**: `GET/POST /api/admin/receipt-signer` → rotate kid; UI reflects change.
+
+---
+
+## 📌 What I will not do (per your preference)
+
+* I will **not** offer to open a PR.
+
+---
+
+## 🚀 Next step for your agent (do this now)
+
+1. **Create/patch** the new files shown above.
+2. **Run migrations** (add new tables): `status_lists` (done in Phase 1), `merkle_snapshots`, `asset_transfers`, `asset_usage`.
+3. **Mount routes** in `server.ts` (status, reverify, auditExports, transfer, usage, receiptSigner [dev]).
+4. **Wire UI** additions: Verification (fresh toggle + inputs), Audit Logs (root/proof buttons), API Keys / Rotation (signer sub-panel).
+5. **Run `pnpm test`** (Vitest) to confirm smoke tests pass.
+6. **Perform end-to-end demo** using the Final Smoke steps above.
+
+If you want the **exact UI patches** for the three new Phase-2/3 elements (Verification fresh toggle, Audit Logs root/proof panel, Signer sub-panel), say **“generate the UI patches”** and I’ll produce those components next.

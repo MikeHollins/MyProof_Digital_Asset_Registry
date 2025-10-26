@@ -1,0 +1,392 @@
+Awesome — here are the **Phase 2 & 3 UI patches** your Replit agent can paste into the **MyProof PAR** frontend. They wire the new backend features we just added:
+
+* **Verification (fresh-proof)**: checkbox + `proof_uri`/`proof_bytes` inputs, included in the verify POST body
+* **Audit Logs**: “Get Root” & “Get Proof” panels for your Merkle audit endpoints
+* **API Keys / Rotation**: a **Receipt Signer** sub-panel (dev-only) to view & rotate the receipt-signer key
+
+Each file is **complete** and ready to drop in. If a page already exists, replace the file; if you prefer to merge, copy only the changed sections.
+
+---
+
+## 1) Verification page — add Fresh Proof (SRI)
+
+**Replace** `client/src/pages/Verification.tsx` with:
+
+```tsx
+import React, { useEffect, useState } from "react";
+import { useLocation } from "wouter";
+import { useToast } from "@/components/toast/ToastProvider";
+
+// ===== Helpers =====
+function authHeader() {
+  const t = localStorage.getItem("ADMIN_API_TOKEN") || "";
+  return t ? { Authorization: t } : {};
+}
+async function fetchJSON(url: string, init?: RequestInit) {
+  const res = await fetch(url, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers || {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.reason || data?.error || `HTTP ${res.status}`);
+  return data;
+}
+
+// ===== Page =====
+export default function Verification() {
+  const [location] = useLocation();
+  const params = new URLSearchParams(location.split("?")[1] || "");
+  const assetQuery = params.get("asset") || "";
+
+  const [assetId, setAssetId] = useState<string>(assetQuery);
+  const [receipt, setReceipt] = useState<string>("");
+  const [audience, setAudience] = useState<string>("myproof-registry");
+  const [nonce, setNonce] = useState<string>("demo");
+
+  // Fresh-proof flags/inputs
+  const [requireFresh, setRequireFresh] = useState<boolean>(false);
+  const [freshMode, setFreshMode] = useState<"uri"|"bytes">("uri");
+  const [proofUri, setProofUri] = useState<string>("https://cdn.myproof.ai/proofs/demo-001.jws");
+  const [proofBytes, setProofBytes] = useState<string>(""); // base64url
+
+  const [result, setResult] = useState<any>(null);
+  const [err, setErr] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setErr("");
+    setResult(null);
+    try {
+      if (!assetId) throw new Error("Asset ID is required");
+      if (!receipt) throw new Error("Receipt (compact JWS) is required");
+
+      const body: any = { receipt, audience, nonce };
+      if (requireFresh) {
+        body.requireFreshProof = true;
+        if (freshMode === "uri") {
+          if (!proofUri) throw new Error("proof_uri required for fresh verification by URI");
+          body.proof_uri = proofUri;
+        } else {
+          if (!proofBytes) throw new Error("proof_bytes (base64url) required for fresh verification by bytes");
+          body.proof_bytes = proofBytes;
+        }
+      }
+
+      const data = await fetchJSON(`/api/proof-assets/${encodeURIComponent(assetId)}/verify`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setResult(data);
+      if (data.verdict === "valid") toastSuccess("Verification passed.", "Verdict: valid");
+      else if (data.verdict === "revoked") toastError("Credential is revoked.", "Verdict: revoked");
+      else toastInfo(`Verdict: ${data.verdict}`, "Verification");
+    } catch (e: any) {
+      const msg = String(e.message || e);
+      setErr(msg);
+      toastError(msg, "Verification Error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <form onSubmit={onSubmit} className="p-4 border rounded bg-white space-y-3">
+        <div className="grid gap-3">
+          <label className="text-sm">Asset ID</label>
+          <input
+            value={assetId}
+            onChange={(e) => setAssetId(e.target.value)}
+            placeholder="proof_asset_id"
+            className="border p-2 rounded"
+          />
+
+          <label className="text-sm">Receipt (compact JWS)</label>
+          <textarea
+            value={receipt}
+            onChange={(e) => setReceipt(e.target.value)}
+            placeholder="eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsIi4uLg"
+            className="border p-2 rounded h-40 font-mono"
+          />
+
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm">Audience</label>
+              <input
+                value={audience}
+                onChange={(e) => setAudience(e.target.value)}
+                className="border p-2 rounded w-full"
+              />
+            </div>
+            <div>
+              <label className="text-sm">Nonce</label>
+              <input
+                value={nonce}
+                onChange={(e) => setNonce(e.target.value)}
+                className="border p-2 rounded w-full"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Fresh-proof controls */}
+        <div className="p-3 border rounded bg-gray-50 space-y-2">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={requireFresh} onChange={(e)=> setRequireFresh(e.target.checked)} />
+            <span>Require Fresh Proof (SRI)</span>
+          </label>
+
+          {requireFresh && (
+            <>
+              <div className="flex items-center gap-4 text-sm">
+                <label className="flex items-center gap-1">
+                  <input type="radio" name="freshMode" value="uri" checked={freshMode === "uri"} onChange={()=>setFreshMode("uri")} />
+                  <span>proof_uri (HTTPS)</span>
+                </label>
+                <label className="flex items-center gap-1">
+                  <input type="radio" name="freshMode" value="bytes" checked={freshMode === "bytes"} onChange={()=>setFreshMode("bytes")} />
+                  <span>proof_bytes (base64url)</span>
+                </label>
+              </div>
+
+              {freshMode === "uri" ? (
+                <div className="grid gap-1">
+                  <label className="text-xs text-gray-600">Proof URI (allowlisted host, 3s timeout, 128KB cap)</label>
+                  <input
+                    value={proofUri}
+                    onChange={(e)=> setProofUri(e.target.value)}
+                    className="border p-2 rounded w-full"
+                    placeholder="https://cdn.myproof.ai/proofs/demo-001.jws"
+                  />
+                </div>
+              ) : (
+                <div className="grid gap-1">
+                  <label className="text-xs text-gray-600">Proof Bytes (base64url)</label>
+                  <textarea
+                    value={proofBytes}
+                    onChange={(e)=> setProofBytes(e.target.value)}
+                    className="border p-2 rounded w-full h-28 font-mono"
+                    placeholder="eyJhbGciOiJ..."
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button type="submit" className="px-4 py-2 rounded bg-black text-white">
+            {loading ? "Verifying…" : "Verify"}
+          </button>
+          {err && <span className="text-sm text-red-600">{err}</span>}
+        </div>
+      </form>
+
+      {result && (
+        <section className="p-4 border rounded bg-white">
+          <h2 className="font-semibold mb-2">Verification Result</h2>
+          <VerdictBadge verdict={result.verdict} />
+          <pre className="bg-gray-50 p-2 overflow-x-auto">{JSON.stringify(result, null, 2)}</pre>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function VerdictBadge({ verdict }: { verdict?: string }) {
+  const base = "inline-block px-2 py-0.5 rounded text-xs ml-2";
+  if (verdict === "valid") return <span className={`${base} bg-green-100 text-green-800`}>valid</span>;
+  if (verdict === "revoked") return <span className={`${base} bg-red-100 text-red-800`}>revoked</span>;
+  if (verdict === "suspended") return <span className={`${base} bg-yellow-100 text-yellow-800`}>suspended</span>;
+  return <span className={`${base} bg-gray-200 text-gray-800`}>{verdict || "—"}</span>;
+}
+```
+
+---
+
+## 2) Audit Logs page — add Merkle Root & Inclusion Proof panels
+
+**Replace** `client/src/pages/AuditLogs.tsx` with:
+
+```tsx
+import React, { useState } from "react";
+import { useToast } from "@/components/toast/ToastProvider";
+
+// Helpers
+function authHeader() {
+  const t = localStorage.getItem("ADMIN_API_TOKEN") || "";
+  return t ? { Authorization: t } : {};
+}
+async function fetchJSON(url: string, init?: RequestInit) {
+  const res = await fetch(url, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers || {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
+
+export default function AuditLogs() {
+  const { success: toastSuccess, error: toastError } = useToast();
+  const [root, setRoot] = useState<{ count?: number; root?: string } | null>(null);
+  const [eventId, setEventId] = useState<string>("");
+  const [proof, setProof] = useState<any>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+
+  async function getRoot() {
+    setLoading(true);
+    setProof(null);
+    try {
+      const data = await fetchJSON(`/api/audit/root`);
+      setRoot({ count: data.count, root: data.root });
+      toastSuccess("Merkle root computed.", "Audit");
+    } catch (e: any) {
+      toastError(String(e.message || e), "Audit Error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function getProof() {
+    setLoading(true);
+    try {
+      if (!eventId) throw new Error("event_id required");
+      const data = await fetchJSON(`/api/audit/proof/${encodeURIComponent(eventId)}`);
+      setProof(data);
+      toastSuccess("Inclusion proof generated.", "Audit");
+    } catch (e: any) {
+      toastError(String(e.message || e), "Audit Error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Root */}
+      <section className="p-4 border rounded bg-white space-y-2">
+        <h2 className="font-semibold">Merkle Root</h2>
+        <button onClick={getRoot} className="px-3 py-1.5 rounded bg-black text-white">
+          {loading ? "Computing…" : "Get Root"}
+        </button>
+        {root && (
+          <div className="text-sm mt-2">
+            <div>Count: <span className="font-mono">{root.count ?? "—"}</span></div>
+            <div>Root: <span className="font-mono break-all">{root.root ?? "—"}</span></div>
+          </div>
+        )}
+      </section>
+
+      {/* Inclusion proof */}
+      <section className="p-4 border rounded bg-white space-y-2">
+        <h2 className="font-semibold">Inclusion Proof by event_id</h2>
+        <div className="flex items-center gap-2">
+          <input
+            value={eventId}
+            onChange={(e)=> setEventId(e.target.value)}
+            placeholder="event_id (UUID)"
+            className="border p-2 rounded flex-1"
+          />
+          <button onClick={getProof} className="px-3 py-1.5 rounded border">
+            {loading ? "Working…" : "Get Proof"}
+          </button>
+        </div>
+        {proof && (
+          <pre className="bg-gray-50 p-2 overflow-x-auto text-sm">{JSON.stringify(proof, null, 2)}</pre>
+        )}
+      </section>
+    </div>
+  );
+}
+```
+
+> For a nicer experience, you can add a small table of recent `audit_events` to pick an `event_id`. Not required for Phase 2.
+
+---
+
+## 3) API Keys / Rotation — add Receipt Signer sub-panel (dev only)
+
+**Patch** `client/src/pages/ApiKeys.tsx` by appending a **Receipt Signer** card at the bottom. If you prefer a separate component, create one and import; here we inline for simplicity.
+
+Add this **below the keys table** (or after the “Generate New Key” dialog):
+
+```tsx
+{/* ===== Receipt Signer (Dev Only) ===== */}
+<section className="p-4 border rounded bg-white space-y-2 mt-6">
+  <h2 className="font-semibold">Receipt Signer (Dev Only)</h2>
+  <ReceiptSignerPanel />
+</section>
+```
+
+Then **add the panel component** inside the same file (below the page component), or extract to `components/ReceiptSignerPanel.tsx`:
+
+```tsx
+function ReceiptSignerPanel() {
+  const [meta, setMeta] = React.useState<any>(null);
+  const [loading, setLoading] = React.useState(false);
+  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
+
+  async function load() {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/admin/receipt-signer`, { headers: { ...authHeader() } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setMeta(data.current || null);
+      toastInfo("Loaded current signer.", "Signer");
+    } catch (e:any) {
+      toastError(String(e.message || e), "Signer Error");
+    } finally { setLoading(false); }
+  }
+
+  async function rotate() {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/admin/receipt-signer/rotate`, { method:'POST', headers: { ...authHeader() } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      toastSuccess(`Rotated signer. New kid: ${data.newKid}`, "Signer");
+      await load();
+    } catch (e:any) {
+      toastError(String(e.message || e), "Signer Error");
+    } finally { setLoading(false); }
+  }
+
+  const dev = (process.env.NODE_ENV !== 'production');
+
+  return (
+    <div className="space-y-2">
+      {!dev && <div className="text-sm text-gray-600">Hidden in production (use your verifier service).</div>}
+      <div className="flex items-center gap-2">
+        <button onClick={load} className="px-3 py-1.5 rounded border">{loading ? "Loading…" : "Load"}</button>
+        <button onClick={rotate} className="px-3 py-1.5 rounded bg-black text-white" disabled={!dev || loading}>Rotate (Dev)</button>
+      </div>
+      {meta ? (
+        <div className="text-sm">
+          <div>kid: <span className="font-mono">{meta.kid}</span></div>
+          <div>alg: <span className="font-mono">{meta.alg}</span></div>
+          <div>created: <span className="font-mono">{meta.createdAt}</span></div>
+        </div>
+      ) : <div className="text-sm text-gray-500">No signer loaded.</div>}
+    </div>
+  );
+}
+```
+
+> The dev-only backend endpoints must be mounted (we already provided `registerReceiptSignerRoutes`). In production, call your verifier service instead and keep this hidden.
+
+---
+
+## 4) Quick smoke
+
+* **Verification → Require Fresh Proof**: test with `proof_uri` on your allowlist or `proof_bytes` (base64url). See success/errors as toasts + result panel.
+* **Audit Logs**: “Get Root” → shows count + hex root; “Get Proof” → returns inclusion proof array for a known `event_id`.
+* **API Keys / Rotation**: scroll to “Receipt Signer (Dev Only)” → **Load** → shows `kid`; **Rotate** → new `kid` appears and success toast fires.
+
+---
+
+If you want me to also add a **mini recent events table** in Audit Logs (so you can click an `event_id` instead of pasting), say the word and I’ll generate that next.
