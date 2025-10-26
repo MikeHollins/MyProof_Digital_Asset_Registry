@@ -43,6 +43,8 @@ export const proofAssets = pgTable("proof_assets", {
   partnerIdx: index("ix_partner").on(table.partnerId),
   formatIdx: index("ix_format").on(table.proofFormat),
   verificationStatusIdx: index("ix_verification_status").on(table.verificationStatus),
+  // Composite index for partner analytics queries (WHERE partner_id = X AND verification_status = Y)
+  partnerStatusIdx: index("ix_partner_verification_status").on(table.partnerId, table.verificationStatus),
 }));
 
 // Audit/Transparency Log - Append-only event tracking

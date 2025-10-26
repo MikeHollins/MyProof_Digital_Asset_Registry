@@ -6,6 +6,7 @@ import { z } from "zod";
 import { generateProofCommitment, generateCID, normalizeUrl, validateDigestEncoding } from "./crypto-utils";
 import { verifyProof } from "./proof-verification";
 import { generateReceipt, generateTestKeypair } from "./receipt-service";
+import { notFound, conflict } from "./utils/errors";
 
 // Generate signing keypair for receipts (in production, use KMS/HSM)
 let receiptSigningKey: JsonWebKey | null = null;
@@ -691,7 +692,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       let statusList = await storage.getStatusList(body.statusListUrl);
       if (!statusList) {
-        return res.status(404).json({ error: "Status list not found" });
+        return notFound(req, res, "Status list not found", "STATUS_LIST_NOT_FOUND");
+      }
+
+      // Optimistic concurrency control: check If-Match header
+      const ifMatch = req.headers['if-match'];
+      if (ifMatch && statusList.etag && ifMatch !== statusList.etag) {
+        return conflict(
+          req,
+          res,
+          "Precondition failed - status list was modified",
+          "ETAG_MISMATCH",
+          `Current ETag: ${statusList.etag}`
+        );
       }
 
       // Decode base64 bitstring, apply operations using utilities, re-encode

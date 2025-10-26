@@ -113,6 +113,14 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 
+// Request tracing middleware - attach trace_id to every request for log correlation
+app.use((req, res, next) => {
+  const traceId = crypto.randomUUID();
+  (req as any).traceId = traceId;
+  res.setHeader('X-Trace-Id', traceId);
+  next();
+});
+
 // RFC 7807 Problem Details error handler
 function problemDetails(
   res: Response,
@@ -120,7 +128,8 @@ function problemDetails(
   type: string,
   title: string,
   detail?: string,
-  instance?: string
+  instance?: string,
+  traceId?: string
 ) {
   res.status(status).json({
     type: `https://par-registry.example.com/errors/${type}`,
@@ -128,12 +137,14 @@ function problemDetails(
     status,
     detail,
     instance,
+    traceId, // Include trace_id for log correlation
   });
 }
 
 // Error handler middleware
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-  console.error('[error]', err);
+  const traceId = (req as any).traceId;
+  console.error(`[error] trace_id=${traceId}`, err.message);
   
   // Check for specific error types
   if (err.name === 'PayloadTooLargeError') {
@@ -143,7 +154,8 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
       'payload-too-large',
       'Request payload exceeds size limit',
       'The request body exceeds the 64KB size limit. Please reduce the payload size.',
-      req.path
+      req.path,
+      traceId
     );
   }
   
@@ -154,7 +166,8 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
       'invalid-json',
       'Invalid JSON in request body',
       'The request body contains invalid JSON. Please check the syntax.',
-      req.path
+      req.path,
+      traceId
     );
   }
   
@@ -165,7 +178,8 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     'internal-error',
     'Internal server error',
     process.env.NODE_ENV === 'development' ? err.message : undefined,
-    req.path
+    req.path,
+    traceId
   );
 });
 

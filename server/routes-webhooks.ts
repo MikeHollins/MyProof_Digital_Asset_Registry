@@ -281,7 +281,7 @@ export function registerWebhookRoutes(app: Express) {
           d.event_type,
           d.status,
           d.attempts,
-          d.last_error,
+          LEFT(d.last_error, 400) AS last_error,
           d.delivered_at,
           d.created_at,
           w.url,
