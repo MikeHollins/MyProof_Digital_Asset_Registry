@@ -210,12 +210,14 @@ export function registerAuditExports(app: Express) {
    * Export recent audit events as JSON-LD.
    * Provides linked data format with semantic context for audit events.
    * 
+   * Privacy: Payload fields are redacted, only safe metadata exported.
+   * 
    * @returns JSON-LD document with audit events (max 5000)
    */
   app.get("/api/audit/export.jsonld", async (_req: Request, res: Response) => {
     try {
       const result = await db.execute(
-        `SELECT event_id, event_type, asset_id, payload, timestamp AS created_at 
+        `SELECT event_id, event_type, asset_id, timestamp AS created_at 
          FROM audit_events 
          ORDER BY timestamp DESC 
          LIMIT 5000`
@@ -223,7 +225,7 @@ export function registerAuditExports(app: Express) {
 
       const rows = result.rows || [];
       
-      // Build JSON-LD structure
+      // Build JSON-LD structure with safe metadata only (no payload)
       const jsonld = {
         "@context": {
           "@vocab": "https://myproof.ai/terms#",
@@ -232,7 +234,12 @@ export function registerAuditExports(app: Express) {
           "asset_id": "asset",
           "created_at": "issuedAt"
         },
-        "events": rows
+        "events": rows.map((row: any) => ({
+          event_id: row.event_id,
+          event_type: row.event_type,
+          asset_id: row.asset_id,
+          created_at: row.created_at,
+        }))
       };
       
       // Set Content-Type header

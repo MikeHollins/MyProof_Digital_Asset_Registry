@@ -8,6 +8,7 @@ export const proofAssets = pgTable("proof_assets", {
   proofAssetId: varchar("proof_asset_id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
   proofAssetCommitment: text("proof_asset_commitment").notNull(),
   issuerDid: text("issuer_did").notNull(),
+  partnerId: uuid("partner_id"),
   subjectBinding: text("subject_binding"),
   proofFormat: text("proof_format").notNull(),
   proofDigest: text("proof_digest").notNull(),
@@ -39,6 +40,7 @@ export const proofAssets = pgTable("proof_assets", {
   commitmentIdx: uniqueIndex("ux_commitment").on(table.proofAssetCommitment),
   statusIdx: index("ix_status").on(table.statusListUrl, table.statusListIndex),
   issuerIdx: index("ix_issuer").on(table.issuerDid),
+  partnerIdx: index("ix_partner").on(table.partnerId),
   formatIdx: index("ix_format").on(table.proofFormat),
   verificationStatusIdx: index("ix_verification_status").on(table.verificationStatus),
 }));

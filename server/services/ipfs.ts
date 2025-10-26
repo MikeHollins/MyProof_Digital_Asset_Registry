@@ -17,32 +17,79 @@ function getIpfsClient() {
   return ipfsClient;
 }
 
+export type IpfsResult<T> = 
+  | { ok: true; data: T }
+  | { ok: false; error: string; code: string };
+
 /**
  * Pin JSON object to IPFS and return CIDv1 string
  * @param obj - JSON-serializable object to pin
- * @returns CIDv1 string (content identifier)
+ * @returns Result with CIDv1 string or error
  */
-export async function pinJson(obj: any): Promise<string> {
-  const ipfs = getIpfsClient();
-  const { cid } = await ipfs.add(JSON.stringify(obj));
-  return cid.toString();
+export async function pinJson(obj: any): Promise<IpfsResult<string>> {
+  try {
+    const ipfs = getIpfsClient();
+    const { cid } = await ipfs.add(JSON.stringify(obj));
+    return { ok: true, data: cid.toString() };
+  } catch (error: any) {
+    return {
+      ok: false,
+      error: "Failed to pin content to IPFS",
+      code: "IPFS_PIN_FAILED",
+    };
+  }
 }
 
 /**
  * Retrieve and parse JSON from IPFS by CID
  * @param cidStr - CIDv1 string to fetch
- * @returns Parsed JSON object
+ * @returns Result with parsed JSON object or error
  */
-export async function getJson(cidStr: string): Promise<any> {
-  const ipfs = getIpfsClient();
-  const chunks: Uint8Array[] = [];
-  
-  for await (const chunk of ipfs.cat(cidStr)) {
-    chunks.push(chunk);
+export async function getJson(cidStr: string): Promise<IpfsResult<any>> {
+  try {
+    // Validate CID format first
+    try {
+      CID.parse(cidStr);
+    } catch {
+      return {
+        ok: false,
+        error: "Invalid CID format",
+        code: "INVALID_CID",
+      };
+    }
+
+    const ipfs = getIpfsClient();
+    const chunks: Uint8Array[] = [];
+    
+    for await (const chunk of ipfs.cat(cidStr)) {
+      chunks.push(chunk);
+    }
+    
+    if (chunks.length === 0) {
+      return {
+        ok: false,
+        error: "Content not found",
+        code: "IPFS_NOT_FOUND",
+      };
+    }
+
+    const buf = Buffer.concat(chunks);
+    const parsed = JSON.parse(buf.toString("utf8"));
+    return { ok: true, data: parsed };
+  } catch (error: any) {
+    if (error.message?.includes("JSON")) {
+      return {
+        ok: false,
+        error: "Invalid JSON content",
+        code: "INVALID_JSON",
+      };
+    }
+    return {
+      ok: false,
+      error: "Failed to fetch from IPFS",
+      code: "IPFS_FETCH_FAILED",
+    };
   }
-  
-  const buf = Buffer.concat(chunks);
-  return JSON.parse(buf.toString("utf8"));
 }
 
 /**

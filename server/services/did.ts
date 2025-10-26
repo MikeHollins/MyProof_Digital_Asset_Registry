@@ -32,6 +32,7 @@ export async function resolveDid(did: string) {
 
 export interface DidCheckResult {
   ok: boolean;
+  code?: string;
   reason?: string;
   doc?: any;
 }
@@ -44,23 +45,50 @@ export interface DidCheckResult {
  * - Confirms at least one publicKey / verificationMethod exists
  * 
  * @param did - Decentralized Identifier to check
- * @returns Check result with ok flag, optional reason, and DID Document
+ * @returns Check result with ok flag, error code, and optional reason
  */
 export async function isDidUsable(did: string): Promise<DidCheckResult> {
   try {
+    // Validate DID format
+    if (!did || !did.startsWith("did:")) {
+      return {
+        ok: false,
+        code: "INVALID_DID_FORMAT",
+        reason: "DID must start with 'did:' prefix",
+      };
+    }
+
     const result = await resolveDid(did);
     
     if (!result || !result.didDocument) {
-      return { ok: false, reason: "did_not_resolve" };
+      return {
+        ok: false,
+        code: "DID_NOT_RESOLVED",
+        reason: "DID resolution failed - document not found",
+      };
     }
 
     const vm = result.didDocument.verificationMethod || [];
     if (!vm.length) {
-      return { ok: false, reason: "no_verification_method" };
+      return {
+        ok: false,
+        code: "NO_VERIFICATION_METHOD",
+        reason: "DID document has no verification methods",
+      };
     }
 
     return { ok: true, doc: result.didDocument };
   } catch (e: any) {
-    return { ok: false, reason: String(e.message || e) };
+    // Log internally for debugging but don't expose raw errors to clients
+    console.error("[did-resolver] Resolution error:", {
+      did: did.substring(0, 20) + "...",
+      error: e.message,
+    });
+    
+    return {
+      ok: false,
+      code: "DID_RESOLUTION_ERROR",
+      reason: "Failed to resolve DID - resolver unavailable or network error",
+    };
   }
 }

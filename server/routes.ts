@@ -401,9 +401,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         proof: updatedProof,
       });
     } catch (error: any) {
-      console.log('[verify] ❌ EXCEPTION:', error.message);
-      console.log('[verify] Stack:', error.stack);
-      res.status(500).json({ error: error.message });
+      console.error('[verify] Verification failed:', error.message);
+      res.status(500).json({ error: "Verification failed", code: "VERIFICATION_ERROR" });
     }
   });
 
@@ -435,6 +434,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             title: "Invalid issuer DID",
             status: 400,
             detail: didCheck.reason || "DID resolution failed",
+            code: didCheck.code || "DID_VALIDATION_FAILED",
           });
         }
       }
@@ -498,15 +498,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
             issuer: "did:example:verifier",
             expiresInSeconds: 31536000, // 1 year
           });
-        } catch (error) {
-          console.error("[receipt] Failed to generate receipt:", error);
+        } catch (error: any) {
+          console.error("[receipt] Receipt generation failed:", error.message);
         }
       }
+
+      // Get partner_id from auth context (attached by apiKeyAuth middleware)
+      const partnerId = (req as any).partnerId || null;
 
       // Create proof asset with verification metadata
       const proof = await storage.createProofAsset({
         proofAssetCommitment,
         issuerDid: body.issuerDid,
+        partnerId,
         subjectBinding: body.subjectBinding,
         proofFormat: body.proofFormat,
         proofDigest: body.proofDigest,

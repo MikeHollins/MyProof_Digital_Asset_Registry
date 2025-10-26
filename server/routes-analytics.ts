@@ -68,13 +68,10 @@ export function registerPartnerRoutes(app: Express) {
         });
       }
 
-      // Query 1: Get all proof assets for this partner
-      // Note: proof_assets table doesn't have partner_id, so we'll use issuer_did as a proxy
-      // In a real implementation, you'd need to add partner_id to proof_assets or use a join
-      // For now, we'll query proofs where the issuer matches the partner's DID pattern
+      // Query 1: Get all proof assets for this partner using partner_id
       const proofsResult = await pool.query(
-        `SELECT proof_asset_id FROM proof_assets WHERE issuer_did LIKE $1`,
-        [`%${partnerId}%`]
+        `SELECT proof_asset_id FROM proof_assets WHERE partner_id = $1`,
+        [partnerId]
       );
       
       const proofIds = proofsResult.rows.map((row: any) => row.proof_asset_id);

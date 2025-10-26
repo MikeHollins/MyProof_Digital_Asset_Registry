@@ -79,7 +79,7 @@ export async function deliverWebhook(
   }
 
   // Record delivery attempt
-  await pool.execute(
+  await pool.query(
     `INSERT INTO webhook_deliveries 
      (webhook_id, event_type, payload, status, attempts, last_error, delivered_at)
      VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $4 BETWEEN 200 AND 299 THEN now() ELSE NULL END)`,
@@ -106,7 +106,7 @@ export async function publishEvent(
   payload: any
 ): Promise<void> {
   // Find active webhooks for this partner
-  const result = await pool.execute(
+  const result = await pool.query(
     `SELECT * FROM webhook_subscriptions 
      WHERE partner_id = $1 AND active = true`,
     [partnerId]
@@ -124,8 +124,7 @@ export async function publishEvent(
       // Fire and forget - don't block on webhook delivery
       deliverWebhook(webhook, eventType, payload).catch((err) => {
         console.error(
-          `[webhooks] Failed to deliver ${eventType} to ${webhook.url}:`,
-          err
+          `[webhooks] Delivery failed: webhook=${webhook.webhook_id} event=${eventType} url=${webhook.url.substring(0, 30)}...`
         );
       });
     }
@@ -140,7 +139,7 @@ export async function publishGlobalEvent(
   eventType: string,
   payload: any
 ): Promise<void> {
-  const result = await pool.execute(
+  const result = await pool.query(
     `SELECT * FROM webhook_subscriptions WHERE active = true`
   );
 
@@ -154,8 +153,7 @@ export async function publishGlobalEvent(
     if (types.includes(eventType.toUpperCase()) || types.includes("*")) {
       deliverWebhook(webhook, eventType, payload).catch((err) => {
         console.error(
-          `[webhooks] Failed to deliver ${eventType} to ${webhook.url}:`,
-          err
+          `[webhooks] Delivery failed: webhook=${webhook.webhook_id} event=${eventType} url=${webhook.url.substring(0, 30)}...`
         );
       });
     }
