@@ -1,0 +1,467 @@
+Amazing — let’s execute Phase 2 & Phase 3 for MyProof Registry (PAR). Below is a single master prompt for your Replit agent that adds fresh-proof re-verification (SRI), audit transparency (Merkle roots + exports), tests, and the extended features (transfer/provenance, license/usage receipts, receipt-signer rotation UI). It’s designed to drop into your current codebase and match everything we’ve already built.
+
+I confirmed your repo exists: MikeHollins/MyProof_Digital_Asset_Registry (public). The plan below assumes that codebase and the Phase-1 endpoints we shipped.
+
+🛠 Replit Agent — Phase 2 & 3 Implementation Pack (MyProof Registry)
+Overview
+
+Phase 2: Fresh-proof path (SRI), Audit Transparency (Merkle), Test suite
+
+Phase 3: Transfer/Provenance, License/Usage tracking (usage receipts), Receipt-Signer Rotation UI, Docs stubs
+
+You’ll create/modify the files exactly as described. If a file already exists, merge.
+
+PHASE 2
+2.1 Fresh-proof re-verification (SRI + caps + discard)
+A) Extend re-verify route to support “fresh” path
+
+backend/src/routes/reverify.ts — augment the schema and add fresh logic.
+
+// add to ReverifyReq
+const ReverifyReq = z.object({
+  receipt: z.string(),
+  audience: z.string().optional(),
+  nonce: z.string().optional(),
+  requireFreshProof: z.boolean().optional(),        // NEW
+  proof_uri: z.string().optional(),                 // NEW (https: or cid:)
+  proof_bytes: z.string().optional()                // NEW (base64url)
+});
+
+
+Helpers for SRI and caps
+backend/src/utils/sri.ts
+
+import { createHash } from "node:crypto";
+
+const ALLOW_HTTPS_HOSTS = new Set([
+  "localhost:8080",            // dev
+  "cdn.myproof.ai"             // add hosts as needed
+]);
+
+const MAX_BYTES = 128 * 1024; // 128 KB
+const TIMEOUT_MS = 3000;
+
+export async function fetchWithSRI(proofUri: string, expectedDigestB64u: string) {
+  const u = new URL(proofUri);
+  if (u.protocol !== 'https:') throw new Error('unsupported_scheme');
+  if (!ALLOW_HTTPS_HOSTS.has(u.host)) throw new Error('origin_not_allowlisted');
+
+  const controller = new AbortController();
+  const t = setTimeout(()=>controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(proofUri, { signal: controller.signal });
+    if (!res.ok) throw new Error(`fetch_failed_${res.status}`);
+
+    const reader = res.body!.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_BYTES) throw new Error('payload_too_large');
+      chunks.push(value);
+    }
+    const bytes = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+
+    const digest = Buffer.from(createHash('sha256').update(bytes).digest()).toString('base64url');
+    if (digest !== expectedDigestB64u) throw new Error('sri_digest_mismatch');
+    return new Uint8Array(bytes);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+export function decodeB64u(b64u: string) {
+  try { return Buffer.from(b64u.replace(/-/g,'+').replace(/_/g,'/'), 'base64'); }
+  catch { throw new Error('invalid_proof_bytes'); }
+}
+
+
+In reverify route — fresh logic after fast-path checks:
+
+// decide if fresh proof is required (Phase 2: accept client flag; Phase 3: enforce by policy)
+const mustFresh = Boolean(body.requireFreshProof);
+
+// if mustFresh → obtain proof bytes (either body.proof_bytes or fetch body.proof_uri via SRI)
+let proofBytes: Uint8Array | null = null;
+if (mustFresh) {
+  if (body.proof_bytes) {
+    proofBytes = new Uint8Array(decodeB64u(body.proof_bytes));
+  } else if (body.proof_uri) {
+    proofBytes = await fetchWithSRI(body.proof_uri, claims.proof_digest);
+  } else {
+    return res.status(400).json({ verdict:'rejected', reason:'fresh_proof_required' });
+  }
+
+  // now route to your format-specific verifier (ZK/JWT/HW/etc.)
+  // For Phase 2: implement VC_JWT + ZK_PROOF; others return ok:true as stubs.
+  const verifyResult = await verifyFreshProof(asset.proof_format, proofBytes);
+  if (!verifyResult.ok) {
+    return res.status(400).json({ verdict:'rejected', reason: verifyResult.reason || 'fresh_verification_failed' });
+  }
+  // IMPORTANT: do not persist proofBytes; discard after verify
+  proofBytes = null;
+}
+
+
+Format-specific verification
+backend/src/services/freshVerifier.ts
+
+export async function verifyFreshProof(format: string, bytes: Uint8Array) {
+  try {
+    if (format === 'VC_JWT') {
+      // Parse as compact JWS and verify using expected issuer or JWKS (optional demonstration)
+      // For Phase 2, proof of concept: ensure it "looks like" a JWT (three Base64url segments)
+      const txt = Buffer.from(bytes).toString('utf8');
+      const parts = txt.split('.');
+      if (parts.length !== 3) return { ok:false, reason:'malformed_jwt' };
+      // If you'd like, call jose.jwtVerify AGAINST a special JWKS for the underlying credential.
+      return { ok:true };
+    }
+    if (format === 'ZK_PROOF') {
+      // In Phase 2, stub to ok:true; Phase 3 can call snarkjs verify with vKey if available.
+      return { ok:true };
+    }
+    // others - stub ok for now
+    return { ok:true };
+  } catch (e:any) {
+    return { ok:false, reason: String(e.message || e) };
+  }
+}
+
+2.2 Audit Transparency — Merkle roots & exports
+
+We’ll add rolling Merkle tree snapshots and endpoints to get the current root and export inclusion proofs for events. For simplicity, we compute Merkle from the event leaf hashes (hash of {event_id,event_type,asset_id,payload,created_at} JSON). v1 can recompute periodically; v2 can maintain incrementally.
+
+A) Schema for Merkle snapshots
+CREATE TABLE IF NOT EXISTS merkle_snapshots (
+  snapshot_id BIGSERIAL PRIMARY KEY,
+  tree_size BIGINT NOT NULL,
+  root_hash BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+B) Merkle utils
+
+backend/src/services/merkle.ts
+
+import { createHash } from "node:crypto";
+
+function sha256(buf: Buffer | string) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  return createHash('sha256').update(b).digest();
+}
+
+export function leafHash(json: any) {
+  return sha256(Buffer.from(JSON.stringify(json)));
+}
+
+export function merkleRoot(leaves: Buffer[]): Buffer {
+  if (leaves.length === 0) return sha256('');
+  let level = leaves.slice();
+  while (level.length > 1) {
+    const next: Buffer[] = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const a = level[i];
+      const b = i+1 < level.length ? level[i+1] : level[i];
+      next.push(sha256(Buffer.concat([a, b])));
+    }
+    level = next;
+  }
+  return level[0];
+}
+
+export function merkleProof(leaves: Buffer[], index: number) {
+  // return array of sibling hashes for inclusion
+  const proof: Buffer[] = [];
+  let level = leaves.slice();
+  let idx = index;
+  while (level.length > 1) {
+    const next: Buffer[] = [];
+    for (let i=0; i<level.length; i+=2) {
+      const a = level[i];
+      const b = i+1 < level.length ? level[i+1] : level[i];
+      if (i === idx || i+1 === idx) {
+        const sib = (i === idx) ? (i+1 < level.length ? b : a) : a;
+        proof.push(sib);
+        idx = Math.floor(i/2);
+      }
+      next.push(sha256(Buffer.concat([a,b])));
+    }
+    level = next;
+  }
+  return proof;
+}
+
+C) Export endpoints
+
+backend/src/routes/auditExports.ts
+
+import type { Express, Request, Response } from "express";
+import { db } from "../shared/db";
+import { leafHash, merkleRoot, merkleProof } from "../services/merkle";
+
+// GET /api/audit/root -> returns merkle root over all events (last 10k for demo)
+export function registerAuditExports(app: Express) {
+  app.get('/api/audit/root', async (_req: Request, res: Response) => {
+    const r = await db.execute(`SELECT event_id, event_type, asset_id, payload, created_at FROM audit_events ORDER BY created_at ASC LIMIT 10000`);
+    const leaves = (r.rows || []).map((ev:any) => leafHash(ev));
+    const root = merkleRoot(leaves);
+    return res.json({ ok:true, count: leaves.length, root: Buffer.from(root).toString('hex') });
+  });
+
+  // GET /api/audit/proof/:eventId
+  app.get('/api/audit/proof/:eventId', async (req: Request, res: Response) => {
+    const r = await db.execute(`SELECT event_id, event_type, asset_id, payload, created_at FROM audit_events ORDER BY created_at ASC LIMIT 10000`);
+    const rows = r.rows || [];
+    const leaves = rows.map((ev:any) => leafHash(ev));
+    const idx = rows.findIndex((ev:any) => ev.event_id === req.params.eventId);
+    if (idx === -1) return res.status(404).json({ error:'event_not_found' });
+
+    const proof = merkleProof(leaves, idx).map((b)=> Buffer.from(b).toString('hex'));
+    const root = merkleRoot(leaves);
+    return res.json({
+      ok:true,
+      eventIndex: idx,
+      root: Buffer.from(root).toString('hex'),
+      proof
+    });
+  });
+}
+
+
+Mount in server:
+
+import { registerAuditExports } from "./routes/auditExports";
+registerAuditExports(app);
+
+
+UI: add to Audit Logs page a small panel:
+
+“Get Root” (shows count + hex root)
+
+“Get Proof by event_id” (input + button; renders proof array)
+
+2.3 Tests (Vitest) — smoke level now; full suite later
+
+Create a basic test suite:
+
+backend/src/tests/reverify.spec.ts
+
+import { describe, it, expect } from "vitest";
+// Pseudocode; wire your app instance or test helpers
+
+describe("Reverify strictness", () => {
+  it("rejects alg not in allow-list", async () => {
+    // craft a bad header or call a fixture
+    expect(true).toBe(true);
+  });
+  it("rejects missing jti", async () => {
+    expect(true).toBe(true);
+  });
+  it("fails closed on missing status list", async () => {
+    expect(true).toBe(true);
+  });
+});
+
+
+backend/src/tests/status.spec.ts
+
+import { describe, it, expect } from "vitest";
+import { ensureList, applyOps, getList } from "../services/statusListRepo";
+
+describe("Status lists", () => {
+  it("creates list and flips bits", async () => {
+    const url = "http://localhost:8080/status/lists/revocation/test-001";
+    await ensureList(url, 'revocation');
+    const { etag } = await applyOps(url, [{ op:'set', index: 42 }]);
+    expect(etag).toBeDefined();
+    const row = await getList(url);
+    expect(row).toBeTruthy();
+  });
+});
+
+
+Run:
+
+pnpm test
+
+PHASE 3
+3.1 Transfer / Provenance
+A) DB: add provenance (optional table)
+CREATE TABLE IF NOT EXISTS asset_transfers (
+  transfer_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  asset_id UUID NOT NULL,
+  from_did TEXT NOT NULL,
+  to_did TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+B) Route
+
+backend/src/routes/transfer.ts
+
+import type { Express, Request, Response } from "express";
+import { z } from "zod";
+import { db } from "../shared/db";
+import { appendAudit } from "../services/transparency";
+
+const Req = z.object({
+  to_did: z.string().min(3)
+});
+
+export function registerTransferRoutes(app: Express) {
+  app.post('/api/proof-assets/:id/transfer', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { to_did } = Req.parse(req.body);
+      const assetRes = await db.execute(`SELECT issuer_did FROM proof_assets WHERE proof_asset_id=$1 LIMIT 1`, [id]);
+      if (!assetRes.rows.length) return res.status(404).json({ error:'asset_not_found' });
+      const from_did = assetRes.rows[0].issuer_did;
+
+      await db.execute(`UPDATE proof_assets SET issuer_did=$1, updated_at=now() WHERE proof_asset_id=$2`, [to_did, id]);
+      await db.execute(`INSERT INTO asset_transfers (asset_id, from_did, to_did) VALUES ($1,$2,$3)`, [id, from_did, to_did]);
+
+      await appendAudit({ event_type:'TRANSFER', asset_id:id, payload:{ from_did, to_did } });
+      return res.json({ ok:true });
+    } catch (e:any) {
+      return res.status(400).json({ error:'bad_request', detail: String(e.message || e) });
+    }
+  });
+}
+
+
+Mount: registerTransferRoutes(app);
+
+3.2 License / Usage tracking + receipts
+A) DB: usage table
+CREATE TABLE IF NOT EXISTS asset_usage (
+  usage_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  asset_id UUID NOT NULL,
+  used_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+B) Enforce limits and issue a usage receipt (JWS)
+
+backend/src/routes/usage.ts
+
+import type { Express, Request, Response } from "express";
+import { z } from "zod";
+import { db } from "../shared/db";
+import { appendAudit } from "../services/transparency";
+import * as jose from "jose";
+
+const Req = z.object({
+  audience: z.string().optional(),
+  nonce: z.string().optional()
+});
+
+// For demo: dev-only signer (Phase 1 bootstrap key flow reused or separate)
+async function signUsageReceipt(payload:any) {
+  const alg = 'ES256';
+  // you can reuse your demo signer from bootstrap or configure a dev-only signing key here
+  const { generateKeyPair } = await import("jose");
+  const { privateKey } = await generateKeyPair(alg);
+  return new jose.SignJWT(payload).setProtectedHeader({ alg, typ:'JWT' }).sign(privateKey);
+}
+
+export function registerUsageRoutes(app: Express) {
+  app.post('/api/proof-assets/:id/use', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { audience, nonce } = Req.parse(req.body || {});
+      const r = await db.execute(`SELECT license FROM proof_assets WHERE proof_asset_id=$1 LIMIT 1`, [id]);
+      if (!r.rows.length) return res.status(404).json({ error:'asset_not_found' });
+
+      const lic = r.rows[0].license || {};
+      // Phase 3 MVP: enforce permitted_use_count if present
+      if (lic?.permitted_use_count) {
+        const c = await db.execute(`SELECT COUNT(*)::int AS n FROM asset_usage WHERE asset_id=$1`, [id]);
+        const n = c.rows[0].n as number;
+        if (n >= lic.permitted_use_count) return res.status(403).json({ error:'license_exhausted' });
+      }
+
+      await db.execute(`INSERT INTO asset_usage (asset_id) VALUES ($1)`, [id]);
+      await appendAudit({ event_type:'USE', asset_id:id, payload:{ audience, nonce } });
+
+      // Return a signed receipt for the usage event (clients can prove they recorded a use)
+      const now = Math.floor(Date.now()/1000);
+      const rec = await signUsageReceipt({ asset_id:id, aud:audience, nonce, iat:now, purpose:'usage' });
+      return res.json({ ok:true, usage_receipt: rec });
+
+    } catch (e:any) {
+      return res.status(400).json({ error:'bad_request', detail:String(e.message || e) });
+    }
+  });
+}
+
+
+Mount: registerUsageRoutes(app);
+
+3.3 Receipt-Signer Rotation UI (admin-only, optional if signer in separate service)
+A) Admin endpoints (local dev)
+
+backend/src/routes/receiptSigner.ts
+
+import type { Express, Request, Response } from "express";
+import * as jose from "jose";
+import { apiKeyAuth, requireScopes } from "../middleware/apiKey";
+
+let currentKey: { kid: string; alg: string; jwk: any; createdAt: string } | null = null;
+
+// GET current signer meta
+export function registerReceiptSignerRoutes(app: Express) {
+  // Dev-only demo; in prod, call your verifier service instead
+  if (process.env.NODE_ENV === 'production') return;
+
+  app.get('/api/admin/receipt-signer', apiKeyAuth, requireScopes(['admin:*']), async (_req, res) => {
+    return res.json({ ok:true, current: currentKey });
+  });
+
+  app.post('/api/admin/receipt-signer/rotate', apiKeyAuth, requireScopes(['admin:*']), async (_req, res) => {
+    const { generateKeyPair, exportJWK } = await import("jose");
+    const { privateKey } = await generateKeyPair('ES256');
+    const jwk = await exportJWK(privateKey);
+    const kid = crypto.randomUUID();
+    currentKey = { kid, alg:'ES256', jwk, createdAt: new Date().toISOString() };
+    return res.json({ ok:true, newKid:kid, alg:'ES256' });
+  });
+}
+
+
+Mount: registerReceiptSignerRoutes(app);
+
+B) UI sub-panel (under API Keys / Rotation tab)
+
+Add a card that:
+
+GET /api/admin/receipt-signer → show current.kid, alg, createdAt
+
+POST /api/admin/receipt-signer/rotate → rotate and toast success
+
+3.4 Documentation stubs (Markdown)
+
+Create these under docs/:
+
+docs/partner-onboarding.md — scopes, API key usage, sample calls
+
+docs/client-integration.md — how to send receipts, status checks, verdicts
+
+docs/audit-model.md — merkle root endpoint, inclusion proof endpoint
+
+docs/DPIA-template.md, docs/ROPA-register.md — privacy posture (“no PII stored”), data flows, retention
+
+I can generate these if you want standardized text.
+
+Final smoke (Phase 2 & 3)
+
+Fresh proof: On Verification page, tick “requireFreshProof” (add a checkbox) and supply either proof_uri (https on allowlist) or proof_bytes (base64url). Expect fresh verify success.
+
+Audit exports: Call /api/audit/root → show root & count; /api/audit/proof/:eventId → verify an event has inclusion proof.
+
+Transfer: POST /api/proof-assets/:id/transfer → check asset issuer_did changes; audit entry exists.
+
+Usage receipts: POST /api/proof-assets/:id/use → get signed usage receipt JWS; audit entry exists.
+
+Signer rotation (dev): GET & POST endpoints toggle kid; UI shows updated meta.
