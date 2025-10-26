@@ -6,7 +6,7 @@ import { z } from "zod";
 import { generateProofCommitment, generateCID, normalizeUrl, validateDigestEncoding } from "./crypto-utils";
 import { verifyProof } from "./proof-verification";
 import { generateReceipt, generateTestKeypair } from "./receipt-service";
-import { notFound, conflict } from "./utils/errors";
+import { notFound, conflict, internalError, badRequest, sendError } from "./utils/errors";
 
 // Generate signing keypair for receipts (in production, use KMS/HSM)
 let receiptSigningKey: JsonWebKey | null = null;
@@ -86,32 +86,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Dashboard stats
-  app.get("/api/stats", async (_req, res) => {
+  app.get("/api/stats", async (req, res) => {
     try {
       const stats = await storage.getDashboardStats();
       res.json(stats);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 
   // Get all proof assets
-  app.get("/api/proof-assets", async (_req, res) => {
+  app.get("/api/proof-assets", async (req, res) => {
     try {
       const proofs = await storage.getProofAssets();
       res.json(proofs);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 
   // Get recent proof assets
-  app.get("/api/proof-assets/recent", async (_req, res) => {
+  app.get("/api/proof-assets/recent", async (req, res) => {
     try {
       const proofs = await storage.getRecentProofAssets(10);
       res.json(proofs);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -120,11 +120,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const proof = await storage.getProofAsset(req.params.id);
       if (!proof) {
-        return res.status(404).json({ error: "Proof asset not found" });
+        return notFound(req, res, "Proof asset not found", "ASSET_NOT_FOUND");
       }
       res.json(proof);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -143,7 +143,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const proof = await storage.getProofAsset(req.params.id);
       if (!proof) {
         console.log('[verify] ❌ Proof asset not found');
-        return res.status(404).json({ error: "Proof asset not found" });
+        return notFound(req, res, "Proof asset not found", "ASSET_NOT_FOUND");
       }
       
       console.log('[verify] ✓ Proof asset loaded:', {
@@ -176,10 +176,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Fast path: receipt-based verification
         if (!proof.verifierProofRef) {
           console.log('[verify] ❌ No receipt available for fast-path verification');
-          return res.status(400).json({ 
-            error: "Cannot re-verify: no verification receipt available. This proof was registered before receipt-based verification was enabled.",
-            hint: "Use requireFreshProof mode with proof_bytes or proof_uri to verify without receipt",
-          });
+          return badRequest(
+            req,
+            res,
+            "Cannot re-verify: no verification receipt available",
+            "NO_RECEIPT",
+            "Use requireFreshProof mode with proof_bytes or proof_uri to verify without receipt"
+          );
         }
 
         console.log('[verify] Step 1: Verifying receipt signature (fast path)...');
@@ -192,10 +195,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         if (!receiptVerification.ok || !receiptVerification.claims) {
           console.log('[verify] ❌ Receipt signature verification failed:', receiptVerification.reason);
-          return res.status(400).json({
-            error: "Receipt verification failed",
-            reason: receiptVerification.reason,
-          });
+          return badRequest(
+            req,
+            res,
+            "Receipt verification failed",
+            "RECEIPT_INVALID",
+            receiptVerification.reason
+          );
         }
         
         console.log('[verify] ✓ Receipt signature valid');
@@ -207,21 +213,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log('[verify] Step 2: Validating commitments...');
         if (claims.proof_digest !== proof.proofDigest) {
           console.log('[verify] ❌ Proof digest mismatch');
-          return res.status(400).json({
-            error: "Receipt validation failed: proof digest mismatch",
-          });
+          return badRequest(req, res, "Receipt validation failed: proof digest mismatch", "DIGEST_MISMATCH");
         }
         if (claims.policy_hash !== proof.policyHash) {
           console.log('[verify] ❌ Policy hash mismatch');
-          return res.status(400).json({
-            error: "Receipt validation failed: policy hash mismatch",
-          });
+          return badRequest(req, res, "Receipt validation failed: policy hash mismatch", "POLICY_MISMATCH");
         }
         if (claims.constraint_hash !== proof.constraintHash) {
           console.log('[verify] ❌ Constraint hash mismatch');
-          return res.status(400).json({
-            error: "Receipt validation failed: constraint hash mismatch",
-          });
+          return badRequest(req, res, "Receipt validation failed: constraint hash mismatch", "CONSTRAINT_MISMATCH");
         }
         console.log('[verify] ✓ All commitments match');
       }
@@ -237,10 +237,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           normalizedProofUrl = normalizeUrl(proof.statusListUrl);
         } catch (error: any) {
           console.log('[verify] ❌ Invalid status list URL format');
-          return res.status(400).json({
-            error: "Invalid status list URL format",
-            details: error.message,
-          });
+          return badRequest(req, res, "Invalid status list URL format", "INVALID_STATUS_URL", error.message);
         }
         
         if (normalizedReceiptUrl !== normalizedProofUrl || 
@@ -258,9 +255,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               purpose: proof.statusPurpose,
             }
           });
-          return res.status(400).json({
-            error: "Receipt validation failed: status reference mismatch (url, index, or purpose)",
-          });
+          return badRequest(req, res, "Receipt validation failed: status reference mismatch", "STATUS_REF_MISMATCH");
         }
         console.log('[verify] ✓ Status reference matches');
       }
@@ -282,12 +277,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (statusCheck.verdict === 'unknown') {
         // Fail closed: status list unreachable or stale
         console.log('[verify] ❌ Status list unreachable - failing closed');
-        return res.status(503).json({
-          error: "Status verification unavailable - failing closed for security",
-          reason: statusCheck.reason,
-          statusListUrl: proof.statusListUrl,
-          failClosed: true,
-        });
+        return sendError(
+          req,
+          res,
+          503,
+          "Status verification unavailable - failing closed for security",
+          "STATUS_UNAVAILABLE",
+          statusCheck.reason
+        );
       }
       
       console.log('[verify] ✓ Status check result:', {
@@ -322,18 +319,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.log('[verify] ✓ Proof bytes fetched and SRI validated');
           } catch (error: any) {
             console.log('[verify] ❌ SRI fetch failed:', error.message);
-            return res.status(400).json({
-              error: "Fresh proof fetch failed",
-              reason: error.message,
-            });
+            return badRequest(req, res, "Fresh proof fetch failed", "PROOF_FETCH_FAILED", error.message);
           }
         } else {
           console.log('[verify] ❌ Fresh proof required but not provided');
-          return res.status(400).json({
-            error: "Fresh proof verification required",
-            reason: "fresh_proof_required",
-            hint: "Provide either proof_bytes (base64url) or proof_uri (https)",
-          });
+          return badRequest(
+            req,
+            res,
+            "Fresh proof verification required",
+            "PROOF_REQUIRED",
+            "Provide either proof_bytes (base64url) or proof_uri (https)"
+          );
         }
         
         // Verify fresh proof by format
@@ -342,10 +338,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         if (!verifyResult.ok) {
           console.log('[verify] ❌ Fresh proof verification failed:', verifyResult.reason);
-          return res.status(400).json({
-            error: "Fresh proof verification failed",
-            reason: verifyResult.reason || "verification_failed",
-          });
+          return badRequest(
+            req,
+            res,
+            "Fresh proof verification failed",
+            "FRESH_PROOF_INVALID",
+            verifyResult.reason || "verification_failed"
+          );
         }
         
         console.log('[verify] ✓ Fresh proof verified successfully');
@@ -403,7 +402,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error('[verify] Verification failed:', error.message);
-      res.status(500).json({ error: "Verification failed", code: "VERIFICATION_ERROR" });
+      return internalError(req, res, "Verification failed", "VERIFICATION_ERROR");
     }
   });
 
@@ -416,12 +415,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Validate digest encoding based on algorithm
       const digestValidation = validateDigestEncoding(body.proofDigest, body.digestAlg);
       if (!digestValidation.valid) {
-        return res.status(400).json({
-          type: "about:blank",
-          title: "Invalid digest encoding",
-          status: 400,
-          detail: digestValidation.reason,
-        });
+        return badRequest(req, res, "Invalid digest encoding", "INVALID_DIGEST", digestValidation.reason);
       }
 
       // Optional: Validate issuer DID (if DID_VALIDATION_ENABLED)
@@ -430,13 +424,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const { isDidUsable } = await import("./services/did.js");
         const didCheck = await isDidUsable(body.issuerDid);
         if (!didCheck.ok) {
-          return res.status(400).json({
-            type: "about:blank",
-            title: "Invalid issuer DID",
-            status: 400,
-            detail: didCheck.reason || "DID resolution failed",
-            code: didCheck.code || "DID_VALIDATION_FAILED",
-          });
+          return badRequest(req, res, "Invalid issuer DID", didCheck.code || "DID_VALIDATION_FAILED", didCheck.reason || "DID resolution failed");
         }
       }
 
@@ -446,12 +434,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
       
       if (!verification.ok) {
-        return res.status(400).json({
-          type: "about:blank",
-          title: "Invalid proof",
-          status: 400,
-          detail: verification.reason || "Proof verification failed",
-        });
+        return badRequest(req, res, "Invalid proof", "PROOF_VERIFICATION_FAILED", verification.reason || "Proof verification failed");
       }
 
       // Generate commitment using RFC 8785 JCS + CIDv1
@@ -554,29 +537,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({
-          type: "about:blank",
-          title: "Validation error",
-          status: 400,
-          detail: error.errors[0]?.message || "Invalid request body",
-        });
+        return badRequest(req, res, "Validation error", "VALIDATION_FAILED", error.errors[0]?.message || "Invalid request body");
       }
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 
   // Get audit events
-  app.get("/api/audit-events", async (_req, res) => {
+  app.get("/api/audit-events", async (req, res) => {
     try {
       const events = await storage.getAuditEvents();
       res.json(events);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 
   // Verify audit chain integrity
-  app.get("/api/audit-events/verify-chain", async (_req, res) => {
+  app.get("/api/audit-events/verify-chain", async (req, res) => {
     try {
       const { verifyAuditChainLink } = await import("./crypto-utils");
       const events = await storage.getAuditEvents();
@@ -637,7 +615,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         details: results,
       });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -646,13 +624,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const proof = await storage.getProofAsset(req.params.id);
       if (!proof) {
-        return res.status(404).json({ error: "Proof asset not found" });
+        return notFound(req, res, "Proof asset not found", "ASSET_NOT_FOUND");
       }
       
       // Get the status list
       const statusList = await storage.getStatusList(proof.statusListUrl);
       if (!statusList) {
-        return res.status(404).json({ error: "Status list not found" });
+        return notFound(req, res, "Status list not found", "STATUS_LIST_NOT_FOUND");
       }
       
       // Check the status using bitstring utilities
@@ -671,17 +649,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         checkedAt: new Date().toISOString(),
       });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 
   // Get status lists
-  app.get("/api/status-lists", async (_req, res) => {
+  app.get("/api/status-lists", async (req, res) => {
     try {
       const lists = await storage.getStatusLists();
       res.json(lists);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -730,9 +708,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ updated: true, etag });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ error: "Invalid request body" });
+        return badRequest(req, res, "Invalid request body", "VALIDATION_FAILED");
       }
-      res.status(500).json({ error: error.message });
+      return internalError(req, res, error.message);
     }
   });
 

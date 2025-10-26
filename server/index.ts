@@ -7,7 +7,11 @@ import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import { createHash, randomBytes } from "crypto";
 import swaggerUi from "swagger-ui-express";
 import { readFileSync } from "fs";
-import { join } from "path";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
 
