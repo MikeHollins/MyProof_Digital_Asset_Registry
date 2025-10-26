@@ -5,6 +5,7 @@ import { partners, apiKeys } from "@shared/schema";
 import { issueApiKey, revokeApiKey, rotateApiKey, type Scope } from "./services/apiKeys";
 import { requireScopes, apiKeyAuth } from "./middleware/apiKey";
 import { eq } from "drizzle-orm";
+import { badRequest, internalError, sendError } from "./utils/errors";
 
 const PartnerCreate = z.object({
   name: z.string().min(2),
@@ -23,7 +24,7 @@ export function registerAdminApiKeys(app: Express) {
   // Dev-only bootstrap endpoint to create first admin API key
   app.post('/api/admin/bootstrap', async (req: Request, res: Response) => {
     if (process.env.NODE_ENV === 'production') {
-      return res.status(403).json({ ok: false, error: 'bootstrap_disabled_in_production' });
+      return sendError(req, res, 403, "Bootstrap disabled in production", "BOOTSTRAP_DISABLED");
     }
 
     try {
@@ -60,7 +61,7 @@ export function registerAdminApiKeys(app: Express) {
         }
       });
     } catch (e: any) {
-      return res.status(500).json({ ok: false, error: e.message });
+      return internalError(req, res, e.message);
     }
   });
 
@@ -74,7 +75,7 @@ export function registerAdminApiKeys(app: Express) {
       
       return res.json({ ok: true, partner: r[0] });
     } catch (e: any) {
-      return res.status(400).json({ ok: false, error: e.message });
+      return badRequest(req, res, e.message, "PARTNER_CREATE_FAILED");
     }
   });
 
@@ -83,7 +84,7 @@ export function registerAdminApiKeys(app: Express) {
       const allPartners = await db.select().from(partners);
       return res.json({ ok: true, partners: allPartners });
     } catch (e: any) {
-      return res.status(500).json({ ok: false, error: e.message });
+      return internalError(req, res, e.message);
     }
   });
 
@@ -95,7 +96,7 @@ export function registerAdminApiKeys(app: Express) {
       
       return res.json({ ok: true, keyId, token });
     } catch (e: any) {
-      return res.status(400).json({ ok: false, error: e.message });
+      return badRequest(req, res, e.message, "API_KEY_ISSUE_FAILED");
     }
   });
 
@@ -115,7 +116,7 @@ export function registerAdminApiKeys(app: Express) {
       
       return res.json({ ok: true, keys: allKeys });
     } catch (e: any) {
-      return res.status(500).json({ ok: false, error: e.message });
+      return internalError(req, res, e.message);
     }
   });
 
@@ -124,7 +125,7 @@ export function registerAdminApiKeys(app: Express) {
       await revokeApiKey(req.params.keyId);
       return res.json({ ok: true });
     } catch (e: any) {
-      return res.status(400).json({ ok: false, error: e.message });
+      return badRequest(req, res, e.message, "API_KEY_REVOKE_FAILED");
     }
   });
 
@@ -133,7 +134,7 @@ export function registerAdminApiKeys(app: Express) {
       const { token, keyId } = await rotateApiKey(req.params.keyId);
       return res.json({ ok: true, keyId, token });
     } catch (e: any) {
-      return res.status(400).json({ ok: false, error: e.message });
+      return badRequest(req, res, e.message, "API_KEY_ROTATE_FAILED");
     }
   });
 }

@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { pool } from "./db.js";
 import { z } from "zod";
 import crypto from "node:crypto";
+import { badRequest, notFound, internalError } from "./utils/errors";
 
 const createWebhookSchema = z.object({
   partnerId: z.string().uuid(),
@@ -50,10 +51,10 @@ export function registerWebhookRoutes(app: Express) {
       });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ error: "validation_error", details: error.errors });
+        return badRequest(req, res, "Validation error", "VALIDATION_FAILED", error.errors[0]?.message);
       }
       console.error("[webhooks] Create error:", error.message);
-      return res.status(500).json({ error: "internal_server_error" });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -84,7 +85,7 @@ export function registerWebhookRoutes(app: Express) {
       });
     } catch (error: any) {
       console.error("[webhooks] List error:", error.message);
-      return res.status(500).json({ error: "internal_server_error" });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -104,7 +105,7 @@ export function registerWebhookRoutes(app: Express) {
       );
 
       if (result.rows.length === 0) {
-        return res.status(404).json({ error: "webhook_not_found" });
+        return notFound(req, res, "Webhook not found", "WEBHOOK_NOT_FOUND");
       }
 
       return res.json({
@@ -113,7 +114,7 @@ export function registerWebhookRoutes(app: Express) {
       });
     } catch (error: any) {
       console.error("[webhooks] Get error:", error.message);
-      return res.status(500).json({ error: "internal_server_error" });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -146,7 +147,7 @@ export function registerWebhookRoutes(app: Express) {
       }
 
       if (updates.length === 0) {
-        return res.status(400).json({ error: "no_updates_provided" });
+        return badRequest(req, res, "No updates provided", "NO_UPDATES");
       }
 
       params.push(webhookId);
@@ -160,7 +161,7 @@ export function registerWebhookRoutes(app: Express) {
       );
 
       if (result.rows.length === 0) {
-        return res.status(404).json({ error: "webhook_not_found" });
+        return notFound(req, res, "Webhook not found", "WEBHOOK_NOT_FOUND");
       }
 
       return res.json({
@@ -169,10 +170,10 @@ export function registerWebhookRoutes(app: Express) {
       });
     } catch (error: any) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ error: "validation_error", details: error.errors });
+        return badRequest(req, res, "Validation error", "VALIDATION_FAILED", error.errors[0]?.message);
       }
       console.error("[webhooks] Update error:", error.message);
-      return res.status(500).json({ error: "internal_server_error" });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -193,7 +194,7 @@ export function registerWebhookRoutes(app: Express) {
       );
 
       if (result.rows.length === 0) {
-        return res.status(404).json({ error: "webhook_not_found" });
+        return notFound(req, res, "Webhook not found", "WEBHOOK_NOT_FOUND");
       }
 
       return res.json({
@@ -202,7 +203,7 @@ export function registerWebhookRoutes(app: Express) {
       });
     } catch (error: any) {
       console.error("[webhooks] Disable error:", error.message);
-      return res.status(500).json({ error: "internal_server_error" });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -222,7 +223,7 @@ export function registerWebhookRoutes(app: Express) {
       );
 
       if (result.rows.length === 0) {
-        return res.status(404).json({ error: "webhook_not_found" });
+        return notFound(req, res, "Webhook not found", "WEBHOOK_NOT_FOUND");
       }
 
       return res.json({
@@ -231,7 +232,7 @@ export function registerWebhookRoutes(app: Express) {
       });
     } catch (error: any) {
       console.error("[webhooks] Delete error:", error.message);
-      return res.status(500).json({ error: "internal_server_error" });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -259,7 +260,7 @@ export function registerWebhookRoutes(app: Express) {
       });
     } catch (error: any) {
       console.error("[webhooks] Deliveries error:", error.message);
-      return res.status(500).json({ error: "internal_server_error" });
+      return internalError(req, res, error.message);
     }
   });
 
@@ -301,7 +302,7 @@ export function registerWebhookRoutes(app: Express) {
       });
     } catch (error: any) {
       console.error("[webhooks] Failed deliveries error:", error.message);
-      return res.status(500).json({ error: "internal_server_error" });
+      return internalError(req, res, error.message);
     }
   });
 }
