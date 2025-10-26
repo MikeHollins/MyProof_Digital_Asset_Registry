@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { FileText, TreeDeciduous, Search, Copy } from "lucide-react";
+import { FileText, TreeDeciduous, Search, Copy, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { AuditEvent } from "@shared/schema";
@@ -21,6 +22,14 @@ interface InclusionProofResponse {
   treeSize: number;
 }
 
+interface RecentEvent {
+  event_id: string;
+  event_type: string;
+  asset_id: string | null;
+  payload_preview: string;
+  created_at: string;
+}
+
 export default function AuditLogs() {
   const { toast } = useToast();
   const [eventIdInput, setEventIdInput] = useState("");
@@ -29,9 +38,27 @@ export default function AuditLogs() {
   const [loadingRoot, setLoadingRoot] = useState(false);
   const [loadingProof, setLoadingProof] = useState(false);
 
-  const { data: events, isLoading: eventsLoading } = useQuery<AuditEvent[]>({
-    queryKey: ['/api/audit-events'],
+  // Recent Events state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [limit, setLimit] = useState(50);
+
+  // Fetch recent events with search and pagination  
+  const { data: recentEventsData, isLoading: recentEventsLoading, refetch: refetchEvents } = useQuery<{ok: boolean; rows: RecentEvent[]}>({
+    queryKey: ['/api/audit/events', searchQuery, limit],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (searchQuery) params.set('q', searchQuery);
+      params.set('limit', String(limit));
+      const url = `/api/audit/events?${params.toString()}`;
+      const response = await fetch(url, { credentials: 'include' });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
+      return response.json();
+    },
   });
+
+  const recentEvents = recentEventsData?.rows || [];
 
   const handleGetRoot = async () => {
     setLoadingRoot(true);
@@ -98,6 +125,28 @@ export default function AuditLogs() {
     });
   };
 
+  const handleSelectEvent = (eventId: string) => {
+    setEventIdInput(eventId);
+    setInclusionProof(null);
+    toast({
+      title: "Event Selected",
+      description: "Event ID filled. Click 'Get Proof' to generate inclusion proof.",
+    });
+  };
+
+  const truncate = (str: string, len: number = 48) => {
+    if (!str) return "—";
+    return str.length > len ? str.slice(0, len) + "…" : str;
+  };
+
+  const formatDate = (dateStr: string) => {
+    try {
+      return new Date(dateStr).toLocaleString();
+    } catch {
+      return dateStr;
+    }
+  };
+
   return (
     <div className="p-8 space-y-6">
       <div>
@@ -106,6 +155,112 @@ export default function AuditLogs() {
           Append-only transparency log with Merkle tree verification
         </p>
       </div>
+
+      {/* Recent Events Table */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Recent Events
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search event type or asset ID..."
+                className="w-64"
+                data-testid="input-search-events"
+              />
+              <select
+                value={limit}
+                onChange={(e) => setLimit(Number(e.target.value))}
+                className="border rounded px-3 py-2 text-sm"
+                data-testid="select-limit"
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={200}>200</option>
+              </select>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => refetchEvents()}
+                disabled={recentEventsLoading}
+                data-testid="button-refresh-events"
+              >
+                <RefreshCw className={`h-4 w-4 ${recentEventsLoading ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b">
+                <tr className="text-left">
+                  <th className="pb-3 font-medium">Event ID</th>
+                  <th className="pb-3 font-medium">Type</th>
+                  <th className="pb-3 font-medium">Asset ID</th>
+                  <th className="pb-3 font-medium">Payload</th>
+                  <th className="pb-3 font-medium">Created</th>
+                  <th className="pb-3 font-medium text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {recentEventsLoading ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-muted-foreground">
+                      Loading events...
+                    </td>
+                  </tr>
+                ) : recentEvents.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-muted-foreground">
+                      No audit events found
+                    </td>
+                  </tr>
+                ) : (
+                  recentEvents.map((event) => (
+                    <tr key={event.event_id} data-testid={`row-event-${event.event_id}`}>
+                      <td className="py-3 font-mono text-xs">{truncate(event.event_id, 22)}</td>
+                      <td className="py-3">
+                        <Badge variant="outline" data-testid={`badge-event-type-${event.event_id}`}>
+                          {event.event_type}
+                        </Badge>
+                      </td>
+                      <td className="py-3 font-mono text-xs">{truncate(event.asset_id || "—", 22)}</td>
+                      <td className="py-3 font-mono text-xs text-muted-foreground">
+                        {truncate(event.payload_preview, 40)}
+                      </td>
+                      <td className="py-3 text-muted-foreground">{formatDate(event.created_at)}</td>
+                      <td className="py-3 text-right space-x-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => copyToClipboard(event.event_id)}
+                          data-testid={`button-copy-${event.event_id}`}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleSelectEvent(event.event_id)}
+                          data-testid={`button-select-${event.event_id}`}
+                        >
+                          Select
+                        </Button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 md:grid-cols-2">
         {/* Merkle Root Panel */}
@@ -212,73 +367,6 @@ export default function AuditLogs() {
           </CardContent>
         </Card>
       </div>
-
-      {/* Recent Events Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <FileText className="h-5 w-5" />
-            Recent Events
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {eventsLoading ? (
-            <p className="text-center text-muted-foreground py-8">Loading events...</p>
-          ) : !events || events.length === 0 ? (
-            <div className="text-center py-8">
-              <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
-              <p className="text-muted-foreground">No audit events recorded</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left text-sm font-medium text-muted-foreground py-3 px-4">
-                      Event ID
-                    </th>
-                    <th className="text-left text-sm font-medium text-muted-foreground py-3 px-4">
-                      Event Type
-                    </th>
-                    <th className="text-left text-sm font-medium text-muted-foreground py-3 px-4">
-                      Timestamp
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {events.map((event, index) => (
-                    <tr
-                      key={event.eventId}
-                      className="border-b hover-elevate"
-                      data-testid={`row-event-${index}`}
-                    >
-                      <td className="py-3 px-4">
-                        <button
-                          onClick={() => handleEventClick(event.eventId)}
-                          className="font-mono text-sm text-primary hover:underline"
-                          data-testid={`button-event-id-${index}`}
-                        >
-                          {event.eventId}
-                        </button>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="text-sm" data-testid={`text-event-type-${index}`}>
-                          {event.eventType}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="text-sm text-muted-foreground" data-testid={`text-timestamp-${index}`}>
-                          {new Date(event.timestamp).toLocaleString()}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }

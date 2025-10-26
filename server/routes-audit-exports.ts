@@ -1,5 +1,5 @@
 import type { Express, Request, Response } from "express";
-import { db } from "./db";
+import { db, pool } from "./db";
 import { leafHash, merkleRoot, merkleProof } from "./services/merkle";
 
 /**
@@ -10,6 +10,56 @@ import { leafHash, merkleRoot, merkleProof } from "./services/merkle";
  */
 
 export function registerAuditExports(app: Express) {
+  /**
+   * GET /api/audit/events
+   * 
+   * Returns recent audit events with optional search and pagination.
+   * Useful for browsing audit log and selecting events for proof generation.
+   * 
+   * @query limit - Max events to return (default: 50, max: 500)
+   * @query q - Optional text filter on event_type or asset_id (case-insensitive)
+   * @returns Array of recent audit events (PII-free, payload truncated)
+   */
+  app.get("/api/audit/events", async (req: Request, res: Response) => {
+    try {
+      let limit = Number(req.query.limit || 50);
+      if (!Number.isFinite(limit) || limit <= 0) limit = 50;
+      if (limit > 500) limit = 500;
+
+      const q = (req.query.q as string | undefined) || '';
+
+      // Build SQL with optional text filter
+      let sql = `
+        SELECT event_id, event_type, asset_id, payload, timestamp AS created_at
+        FROM audit_events
+      `;
+      const args: any[] = [];
+
+      if (q) {
+        args.push(`%${q}%`);
+        sql += ` WHERE (event_type ILIKE $1 OR CAST(asset_id AS TEXT) ILIKE $1)`;
+      }
+
+      sql += ` ORDER BY timestamp DESC LIMIT ${limit}`;
+
+      const result = await pool.query(sql, args);
+      const rows = (result.rows || []).map((ev: any) => ({
+        event_id: ev.event_id,
+        event_type: ev.event_type,
+        asset_id: ev.asset_id,
+        payload_preview: safePreview(ev.payload),
+        created_at: ev.created_at,
+      }));
+
+      return res.json({ ok: true, rows });
+    } catch (error: any) {
+      return res.status(500).json({
+        error: "Failed to fetch audit events",
+        detail: error.message,
+      });
+    }
+  });
+
   /**
    * GET /api/audit/root
    * 
@@ -108,4 +158,16 @@ export function registerAuditExports(app: Express) {
       });
     }
   });
+}
+
+/**
+ * Helper: Safely truncate payload JSON for preview
+ */
+function safePreview(payload: any, max = 120): string {
+  try {
+    const s = JSON.stringify(payload);
+    return s.length > max ? s.slice(0, max) + '…' : s;
+  } catch {
+    return '';
+  }
 }
