@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Key, Plus, Trash2, Settings, Copy, Check, AlertCircle } from "lucide-react";
+import { Key, Plus, Trash2, Settings, Copy, Check, AlertCircle, RefreshCw, ShieldAlert } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +33,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 
 // Helper to get admin token from localStorage
 function getAdminToken() {
@@ -89,6 +90,12 @@ interface ApiKey {
 
 interface ApiKeyWithPartner extends ApiKey {
   partnerName?: string;
+}
+
+interface SignerMetadata {
+  kid: string;
+  alg: string;
+  createdAt: string;
 }
 
 const AVAILABLE_SCOPES = [
@@ -413,6 +420,9 @@ export default function ApiKeys() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [revokeKeyId, setRevokeKeyId] = useState<string | null>(null);
+  const [signerMetadata, setSignerMetadata] = useState<SignerMetadata | null>(null);
+  const [loadingSignerMetadata, setLoadingSignerMetadata] = useState(false);
+  const [rotatingSignerKey, setRotatingSignerKey] = useState(false);
   const { toast } = useToast();
 
   const { data: keysData, isLoading: keysLoading } = useQuery({
@@ -457,6 +467,49 @@ export default function ApiKeys() {
   }));
 
   const hasAdminToken = !!getAdminToken();
+  const isDevelopment = import.meta.env.MODE !== 'production';
+
+  const handleLoadSigner = async () => {
+    setLoadingSignerMetadata(true);
+    try {
+      const data = await fetchJSON("/api/admin/receipt-signer");
+      setSignerMetadata(data);
+      toast({
+        title: "Signer loaded",
+        description: `Current signer: ${data.kid}`,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Failed to load signer",
+        description: e.message,
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingSignerMetadata(false);
+    }
+  };
+
+  const handleRotateSigner = async () => {
+    setRotatingSignerKey(true);
+    try {
+      const data = await fetchJSON("/api/admin/receipt-signer/rotate", {
+        method: "POST",
+      });
+      setSignerMetadata(data);
+      toast({
+        title: "Signer rotated successfully",
+        description: `New signer: ${data.kid}`,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Failed to rotate signer",
+        description: e.message,
+        variant: "destructive",
+      });
+    } finally {
+      setRotatingSignerKey(false);
+    }
+  };
 
   if (!hasAdminToken) {
     return (
@@ -612,6 +665,81 @@ export default function ApiKeys() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Receipt Signer Panel (Dev Only) */}
+      {isDevelopment && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold">Receipt Signer (Dev Only)</h2>
+              <Badge variant="outline" className="bg-yellow-50 dark:bg-yellow-950/20 text-yellow-700 dark:text-yellow-400 border-yellow-300 dark:border-yellow-700">
+                <ShieldAlert className="h-3 w-3 mr-1" />
+                Development
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground mt-2">
+              Manage the cryptographic signer for verification receipts. In production, use your separate verifier service.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={handleLoadSigner}
+                disabled={loadingSignerMetadata}
+                data-testid="button-load-signer"
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${loadingSignerMetadata ? "animate-spin" : ""}`} />
+                {loadingSignerMetadata ? "Loading..." : "Load Current Signer"}
+              </Button>
+              <Button
+                onClick={handleRotateSigner}
+                disabled={rotatingSignerKey}
+                data-testid="button-rotate-signer"
+              >
+                <Key className="h-4 w-4 mr-2" />
+                {rotatingSignerKey ? "Rotating..." : "Rotate Signer"}
+              </Button>
+            </div>
+
+            {signerMetadata && (
+              <div className="space-y-4 p-4 border rounded bg-muted/30">
+                <h3 className="text-sm font-semibold">Current Signer Metadata</h3>
+                <div className="grid gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Key ID (kid)</Label>
+                    <div className="font-mono text-sm p-2 bg-background rounded border" data-testid="text-signer-kid">
+                      {signerMetadata.kid}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Algorithm</Label>
+                    <div className="font-mono text-sm p-2 bg-background rounded border" data-testid="text-signer-alg">
+                      {signerMetadata.alg}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Created At</Label>
+                    <div className="text-sm p-2 bg-background rounded border" data-testid="text-signer-created">
+                      {new Date(signerMetadata.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-2 p-4 border rounded bg-yellow-50 dark:bg-yellow-950/20">
+              <h4 className="font-semibold text-sm flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-yellow-600" />
+                Production Warning
+              </h4>
+              <p className="text-xs text-muted-foreground">
+                This panel is for development and testing only. In production environments, receipt signing should be handled by a separate, isolated verifier service with its own key management system. Never expose receipt signing capabilities in production applications.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <AdminTokenSettings open={settingsOpen} onOpenChange={setSettingsOpen} />
       <GenerateKeyDialog

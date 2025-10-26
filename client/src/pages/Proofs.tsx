@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Shield, Grid3x3, Table2, Filter } from "lucide-react";
+import { Shield, Grid3x3, Table2, Filter, History, Activity } from "lucide-react";
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,7 +26,9 @@ import { ProofFormatBadge } from "@/components/ProofFormatBadge";
 import { CidDisplay } from "@/components/CidDisplay";
 import { VerificationDetails } from "@/components/VerificationDetails";
 import { ProofDetailsDialog } from "@/components/ProofDetailsDialog";
-import { VerifyConfirmationDialog } from "@/components/VerifyConfirmationDialog";
+import { VerifyConfirmationDialog, type FreshProofParams } from "@/components/VerifyConfirmationDialog";
+import { TransferHistoryDialog } from "@/components/TransferHistoryDialog";
+import { UsageHistoryDialog } from "@/components/UsageHistoryDialog";
 import type { ProofAsset, InsertProofAsset } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -42,6 +44,9 @@ export default function Proofs() {
   const [isDetailsDialogOpen, setIsDetailsDialogOpen] = useState(false);
   const [isVerifyDialogOpen, setIsVerifyDialogOpen] = useState(false);
   const [proofToVerify, setProofToVerify] = useState<ProofAsset | null>(null);
+  const [isTransferHistoryOpen, setIsTransferHistoryOpen] = useState(false);
+  const [isUsageHistoryOpen, setIsUsageHistoryOpen] = useState(false);
+  const [selectedProofForHistory, setSelectedProofForHistory] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     subjectDid: "",
     issuerDid: "",
@@ -86,8 +91,21 @@ export default function Proofs() {
   });
   
   const verifyMutation = useMutation({
-    mutationFn: async (proofId: string) => {
-      const response = await apiRequest("POST", `/api/proof-assets/${proofId}/verify`, {});
+    mutationFn: async ({ proofId, freshProofParams }: { proofId: string; freshProofParams: FreshProofParams }) => {
+      // Map frontend params to backend contract
+      const payload: any = {};
+      
+      if (freshProofParams.requireFreshProof) {
+        payload.requireFreshProof = true;
+        if (freshProofParams.proof_uri) {
+          payload.proof_uri = freshProofParams.proof_uri;
+        }
+        if (freshProofParams.proof_bytes) {
+          payload.proof_bytes = freshProofParams.proof_bytes;
+        }
+      }
+      
+      const response = await apiRequest("POST", `/api/proof-assets/${proofId}/verify`, payload);
       return response.json();
     },
     onSuccess: () => {
@@ -141,10 +159,23 @@ export default function Proofs() {
     setIsVerifyDialogOpen(true);
   };
 
-  const handleConfirmVerify = () => {
+  const handleConfirmVerify = (freshProofParams: FreshProofParams) => {
     if (proofToVerify) {
-      verifyMutation.mutate(proofToVerify.proofAssetId);
+      verifyMutation.mutate({ 
+        proofId: proofToVerify.proofAssetId,
+        freshProofParams 
+      });
     }
+  };
+
+  const handleViewTransferHistory = (proofAssetId: string) => {
+    setSelectedProofForHistory(proofAssetId);
+    setIsTransferHistoryOpen(true);
+  };
+
+  const handleViewUsageHistory = (proofAssetId: string) => {
+    setSelectedProofForHistory(proofAssetId);
+    setIsUsageHistoryOpen(true);
   };
 
   const filteredProofs = proofs?.filter((proof) => {
@@ -306,25 +337,49 @@ export default function Proofs() {
                   />
                 </div>
               </CardContent>
-              <CardFooter className="pt-3 border-t border-card-border flex gap-2">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  className="flex-1" 
-                  onClick={() => handleViewDetails(proof)}
-                  data-testid={`button-details-${proof.proofAssetId}`}
-                >
-                  View Details
-                </Button>
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  className="flex-1"
-                  onClick={() => handleVerifyClick(proof)}
-                  data-testid={`button-verify-${proof.proofAssetId}`}
-                >
-                  Verify
-                </Button>
+              <CardFooter className="pt-3 border-t border-card-border flex flex-col gap-2">
+                <div className="flex gap-2 w-full">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="flex-1" 
+                    onClick={() => handleViewDetails(proof)}
+                    data-testid={`button-details-${proof.proofAssetId}`}
+                  >
+                    View Details
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="flex-1"
+                    onClick={() => handleVerifyClick(proof)}
+                    data-testid={`button-verify-${proof.proofAssetId}`}
+                  >
+                    Verify
+                  </Button>
+                </div>
+                <div className="flex gap-2 w-full">
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    className="flex-1"
+                    onClick={() => handleViewTransferHistory(proof.proofAssetId)}
+                    data-testid={`button-transfer-history-${proof.proofAssetId}`}
+                  >
+                    <History className="h-4 w-4 mr-1" />
+                    Transfers
+                  </Button>
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    className="flex-1"
+                    onClick={() => handleViewUsageHistory(proof.proofAssetId)}
+                    data-testid={`button-usage-history-${proof.proofAssetId}`}
+                  >
+                    <Activity className="h-4 w-4 mr-1" />
+                    Usage
+                  </Button>
+                </div>
               </CardFooter>
             </Card>
           ))}
@@ -395,7 +450,7 @@ export default function Proofs() {
                         {new Date(proof.createdAt).toLocaleDateString()}
                       </td>
                       <td className="p-4 text-right">
-                        <div className="flex justify-end gap-2">
+                        <div className="flex justify-end gap-1">
                           <Button 
                             variant="ghost" 
                             size="sm"
@@ -411,6 +466,22 @@ export default function Proofs() {
                             data-testid={`button-verify-${proof.proofAssetId}`}
                           >
                             Verify
+                          </Button>
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => handleViewTransferHistory(proof.proofAssetId)}
+                            data-testid={`button-transfers-${proof.proofAssetId}`}
+                          >
+                            <History className="h-4 w-4" />
+                          </Button>
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => handleViewUsageHistory(proof.proofAssetId)}
+                            data-testid={`button-usage-${proof.proofAssetId}`}
+                          >
+                            <Activity className="h-4 w-4" />
                           </Button>
                         </div>
                       </td>
@@ -437,6 +508,20 @@ export default function Proofs() {
         onConfirm={handleConfirmVerify}
         isVerifying={verifyMutation.isPending}
         proofId={proofToVerify?.proofAssetId || ""}
+      />
+
+      {/* Transfer History Dialog */}
+      <TransferHistoryDialog
+        proofAssetId={selectedProofForHistory}
+        open={isTransferHistoryOpen}
+        onOpenChange={setIsTransferHistoryOpen}
+      />
+
+      {/* Usage History Dialog */}
+      <UsageHistoryDialog
+        proofAssetId={selectedProofForHistory}
+        open={isUsageHistoryOpen}
+        onOpenChange={setIsUsageHistoryOpen}
       />
 
       {/* Registration Dialog */}
