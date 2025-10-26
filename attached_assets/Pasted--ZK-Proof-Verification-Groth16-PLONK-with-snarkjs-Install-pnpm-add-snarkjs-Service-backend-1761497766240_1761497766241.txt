@@ -1,0 +1,446 @@
+) ZK Proof Verification (Groth16 & PLONK with snarkjs)
+
+Install
+
+pnpm add snarkjs
+
+
+Service: backend/src/services/zkVerifier.ts
+
+import * as snarkjs from "snarkjs";
+
+export type ZkFormat = "GROTH16" | "PLONK";
+
+export async function verifyZk(
+  format: ZkFormat,
+  vKey: any,                              // verification key JSON (trusted)
+  publicSignals: any[],                   // array of public signals
+  proof: any                              // proof object
+): Promise<{ ok: boolean; reason?: string }> {
+  try {
+    if (format === "GROTH16") {
+      const res = await snarkjs.groth16.verify(vKey, publicSignals, proof);
+      return { ok: !!res, reason: res ? undefined : "verify_failed" };
+    }
+    if (format === "PLONK") {
+      const res = await snarkjs.plonk.verify(vKey, publicSignals, proof);
+      return { ok: !!res, reason: res ? undefined : "verify_failed" };
+    }
+    return { ok: false, reason: "unsupported_format" };
+  } catch (e: any) {
+    return { ok: false, reason: String(e.message || e) };
+  }
+}
+
+
+Fresh verifier extension: backend/src/services/freshVerifier.ts
+
+import { verifyZk } from "./zkVerifier";
+
+export async function verifyFreshProof(format: string, bytes: Uint8Array) {
+  try {
+    if (format === 'VC_JWT') {
+      // Basic shape check already done; for Phase 2, OK.
+      return { ok: true };
+    }
+    if (format === 'ZK_PROOF') {
+      // Expected JSON payload: { system: "GROTH16"|"PLONK", vKey: {...}, publicSignals: [...], proof: {...} }
+      const txt = Buffer.from(bytes).toString('utf8');
+      const obj = JSON.parse(txt);
+      if (!obj || !obj.system || !obj.vKey || !obj.publicSignals || !obj.proof) {
+        return { ok:false, reason:'zk_payload_missing_fields' };
+      }
+      const r = await verifyZk(obj.system, obj.vKey, obj.publicSignals, obj.proof);
+      return r;
+    }
+    return { ok: true };  // other formats stubbed
+  } catch (e:any) {
+    return { ok:false, reason:String(e.message || e) };
+  }
+}
+
+
+Where it’s used: fresh-proof path in reverify.ts (already added) now calls verifyFreshProof() to actually verify ZK payloads.
+
+2) DID Resolution (Issuer DID checks)
+
+Install
+
+pnpm add did-resolver ethr-did-resolver web-did-resolver
+
+
+Service: backend/src/services/did.ts
+
+import { Resolver } from "did-resolver";
+import { getResolver as ethrGetResolver } from "ethr-did-resolver";
+import { getResolver as webGetResolver } from "web-did-resolver";
+
+const ethr = ethrGetResolver({});        // supply networks as needed
+const web = webGetResolver();
+
+const resolver = new Resolver({
+  ...ethr,
+  ...web
+  // add more method resolvers as needed
+});
+
+export async function resolveDid(did: string) {
+  return resolver.resolve(did);
+}
+
+/**
+ * Minimal issuer check:
+ * - resolves DID Document
+ * - confirms at least one publicKey / verificationMethod exists
+ */
+export async function isDidUsable(did: string): Promise<{ ok:boolean; reason?:string; doc?:any }> {
+  try {
+    const doc = await resolveDid(did);
+    if (!doc || !doc.didDocument) return { ok:false, reason:'did_not_resolve' };
+    const vm = doc.didDocument.verificationMethod || [];
+    if (!vm.length) return { ok:false, reason:'no_verification_method' };
+    return { ok:true, doc: doc.didDocument };
+  } catch (e:any) {
+    return { ok:false, reason:String(e.message || e) };
+  }
+}
+
+
+Usage (optional):
+
+On mint, if you want to enforce issuer_did hygiene:
+
+const didCheck = await isDidUsable(body.issuer_did);
+if (!didCheck.ok) return res.status(400).json({ error:'bad_issuer_did', detail: didCheck.reason });
+
+3) Webhooks/Events (revocation & status changes)
+
+DB
+
+CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+  webhook_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  partner_id UUID NOT NULL,
+  url TEXT NOT NULL,
+  secret TEXT NOT NULL,          -- HMAC secret for signing deliveries
+  event_types TEXT NOT NULL,     -- CSV list: STATUS_UPDATE,TRANSFER,USE,MINT
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  delivery_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  webhook_id UUID NOT NULL,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  status INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  delivered_at TIMESTAMPTZ
+);
+
+
+Service: backend/src/services/webhooks.ts
+
+import { db } from "../shared/db";
+import crypto from "node:crypto";
+
+function signBody(secret: string, body: string) {
+  return crypto.createHmac("sha256", secret).update(body, "utf8").digest("hex");
+}
+
+// One-shot delivery with retry (basic)
+export async function deliverWebhook(webhook: any, eventType: string, payload: any) {
+  const body = JSON.stringify({ type: eventType, data: payload, ts: new Date().toISOString() });
+  const sig = signBody(webhook.secret, body);
+  let status = 0, attempts = 0, lastError = "";
+
+  for (attempts = 1; attempts <= 3; attempts++) {
+    try {
+      const res = await fetch(webhook.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-MyProof-Signature": sig },
+        body
+      });
+      status = res.status;
+      if (res.ok) break;
+      lastError = await res.text().catch(()=> "http_error");
+      await new Promise(r => setTimeout(r, attempts * 1000));
+    } catch (e:any) {
+      lastError = String(e.message || e);
+      await new Promise(r => setTimeout(r, attempts * 1000));
+    }
+  }
+
+  await db.execute(
+    `INSERT INTO webhook_deliveries (webhook_id, event_type, payload, status, attempts, last_error, delivered_at)
+     VALUES ($1,$2,$3,$4,$5,$6, CASE WHEN $4 BETWEEN 200 AND 299 THEN now() ELSE NULL END)`,
+    [webhook.webhook_id, eventType, JSON.stringify(payload), status, attempts, lastError || null]
+  );
+}
+
+export async function publishEvent(partnerId: string, eventType: string, payload: any) {
+  const r = await db.execute(
+    `SELECT * FROM webhook_subscriptions WHERE partner_id=$1 AND active=true`,
+    [partnerId]
+  );
+  for (const wh of r.rows || []) {
+    const types = String(wh.event_types).split(",").map((s)=> s.trim().toUpperCase());
+    if (types.includes(eventType.toUpperCase())) {
+      deliverWebhook(wh, eventType, payload).catch(()=>{});
+    }
+  }
+}
+
+
+Hook into status updates: After applyOps() → call publishEvent(partnerId, "STATUS_UPDATE", { url, ops }) (if you associate a partner/tenant with the list). For demo, you can publish to all subscriptions.
+
+Admin routes (quick):
+
+POST /api/admin/webhooks (create subscription),
+
+GET /api/admin/webhooks (list),
+
+POST /api/admin/webhooks/:id/disable (deactivate)
+
+4) Auth UI & Partner dashboard (minimum viable)
+
+Keep Admin Settings modal for dev.
+
+Add Partner Dashboard (read-only) page that shows:
+
+API keys (for that partner)
+
+Usage counts (proofs minted, last used, failures)
+
+Recent events (from audit table filtered by partner_id)
+
+Backend helpers:
+
+-- If you need partner scoping, ensure proof_assets table has partner_id (UUID) and fill it during mint.
+ALTER TABLE proof_assets ADD COLUMN IF NOT EXISTS partner_id UUID;
+
+
+Frontend: add client/src/pages/Partner.tsx:
+
+Navbar link “Partner Dashboard” (visible when a partner token is used)
+
+GET /api/partner/overview returns { counts, keys, recentEvents }
+
+5) OpenAPI / Swagger / Redoc
+
+Install
+
+pnpm add swagger-ui-express yaml
+
+
+Expose docs: backend/src/routes/openapi.ts
+
+import type { Express } from "express";
+import swaggerUi from "swagger-ui-express";
+import fs from "node:fs";
+import path from "node:path";
+import YAML from "yaml";
+
+export function registerOpenApi(app: Express) {
+  const p = path.join(process.cwd(), "backend", "openapi", "par-api.yaml");
+  const doc = YAML.parse(fs.readFileSync(p, "utf8"));
+  app.use("/docs", swaggerUi.serve, swaggerUi.setup(doc, { explorer: true }));
+  app.get("/openapi.json", (_req,res)=> res.json(doc));
+}
+
+
+Mount in server.ts:
+
+import { registerOpenApi } from "./routes/openapi";
+registerOpenApi(app);
+
+
+Author the spec: backend/openapi/par-api.yaml (start from Phase-1 endpoints; I can generate a full YAML if you say “generate OpenAPI now”).
+
+6) Developer Guide (partner onboarding) & Security Policies
+
+Create docs with templates under /docs:
+
+docs/partner-onboarding.md
+
+API key issue + example
+
+Mint example (curl)
+
+Re-verify example
+
+Status update example
+
+Webhooks subscription example
+
+docs/client-integration.md
+
+Receipts & status check
+
+Fresh-proof DEMO with SRI
+
+docs/security-policies.md
+
+Key rotation: operator signing keys (quarterly), API keys (60–90d)
+
+Audit retention: 12 months event logs / 36 months root snapshots (example)
+
+Incident response: triage SLA, severity matrix, contacts
+
+docs/audit-model.md
+
+Merkle root endpoint, inclusion proof validation instructions
+
+docs/DPIA-template.md, docs/ROPA-register.md (from earlier Phase 1 doc stubs)
+
+I can generate the initial contents if you want canonical text.
+
+7) IPFS integration (content-address policies/constraints)
+
+Install
+
+pnpm add ipfs-http-client multiformats
+
+
+Service: backend/src/services/ipfs.ts
+
+import { create } from "ipfs-http-client";
+import { CID } from "multiformats/cid";
+
+const IPFS_API = process.env.IPFS_API || "http://127.0.0.1:5001";
+const ipfs = create({ url: IPFS_API });
+
+export async function pinJson(obj: any): Promise<string> {
+  const { cid } = await ipfs.add(JSON.stringify(obj));
+  return cid.toString();
+}
+
+export async function getJson(cidStr: string): Promise<any> {
+  const chunks = [];
+  for await (const c of ipfs.cat(cidStr)) chunks.push(c);
+  const buf = Buffer.concat(chunks as any);
+  return JSON.parse(buf.toString("utf8"));
+}
+
+
+Use: when minting, if policy_cid missing, pin the policy doc and set policy_cid automatically (optional).
+
+8) Drizzle migration tooling
+
+Install
+
+pnpm add -D drizzle-kit
+
+
+drizzle.config.ts
+
+import type { Config } from "drizzle-kit";
+export default {
+  schema: "./backend/shared/schema.ts",
+  out: "./drizzle",
+  driver: "pg",
+  dbCredentials: {
+    connectionString: process.env.DATABASE_URL!
+  }
+} satisfies Config;
+
+
+Scripts in package.json:
+
+{
+  "scripts": {
+    "db:generate": "drizzle-kit generate:pg",
+    "db:migrate": "drizzle-kit push:pg"
+  }
+}
+
+
+Use:
+
+pnpm db:generate
+pnpm db:migrate
+
+9) Partner usage analytics dashboard
+
+Backend aggregates: backend/src/routes/analytics.ts
+
+import type { Express, Request, Response } from "express";
+import { db } from "../shared/db";
+
+export function registerAnalytics(app: Express) {
+  app.get('/api/admin/analytics/overview', async (_req: Request, res: Response) => {
+    // sample metrics; expand as needed
+    const assets = await db.execute(`SELECT COUNT(*)::int AS n FROM proof_assets`);
+    const revoked = await db.execute(`SELECT COUNT(*)::int AS n FROM proof_assets WHERE verification_status='revoked'`);
+    const uses = await db.execute(`SELECT COUNT(*)::int AS n FROM asset_usage`);
+    const byDay = await db.execute(`
+      SELECT date_trunc('day', created_at) AS day, COUNT(*)::int AS n
+      FROM proof_assets GROUP BY 1 ORDER BY 1 DESC LIMIT 14
+    `);
+    return res.json({
+      ok:true,
+      totals: { assets: assets.rows[0].n, revoked: revoked.rows[0].n, uses: uses.rows[0].n },
+      byDay: byDay.rows
+    });
+  });
+}
+
+
+Mount: registerAnalytics(app);
+
+Frontend: new page client/src/pages/Analytics.tsx with a small chart (or simple table) showing totals and last 14 days.
+
+10) Audit log export formats (CSV, JSON-LD)
+
+Backend: backend/src/routes/auditExportFormats.ts
+
+import type { Express, Request, Response } from "express";
+import { db } from "../shared/db";
+
+export function registerAuditExportFormats(app: Express) {
+  app.get('/api/audit/export.csv', async (_req: Request, res: Response) => {
+    const r = await db.execute(`SELECT event_id, event_type, asset_id, created_at FROM audit_events ORDER BY created_at DESC LIMIT 5000`);
+    const rows = r.rows || [];
+    const head = "event_id,event_type,asset_id,created_at\n";
+    const body = rows.map((ev:any) => `${ev.event_id},${ev.event_type},${ev.asset_id || ""},${ev.created_at.toISOString?.() || ev.created_at}`).join("\n");
+    res.setHeader("Content-Type", "text/csv");
+    res.send(head + body);
+  });
+
+  app.get('/api/audit/export.jsonld', async (_req: Request, res: Response) => {
+    const ctx = {
+      "@context": {
+        "@vocab": "https://myproof.ai/terms#",
+        "event_id": "id",
+        "event_type": "type",
+        "asset_id": "asset",
+        "created_at": "issuedAt"
+      }
+    };
+    const r = await db.execute(`SELECT event_id, event_type, asset_id, created_at, payload FROM audit_events ORDER BY created_at DESC LIMIT 1000`);
+    const items = (r.rows || []).map((ev:any) => ({
+      "@type": "AuditEvent",
+      id: ev.event_id,
+      type: ev.event_type,
+      asset: ev.asset_id || null,
+      issuedAt: ev.created_at,
+      payload: ev.payload || {}
+    }));
+    res.json({ ...ctx, items });
+  });
+}
+
+
+Mount: registerAuditExportFormats(app);
+
+UI: Add two buttons on Audit Logs → “Export CSV” & “Export JSON-LD” that hit these endpoints.
+
+Final demo-ready pass
+
+ZK verify: prepare a sample ZK_PROOF JSON (with vKey, proof, publicSignals) and paste as proof_bytes.
+
+DID: show that invalid issuer_did fails mint (if you enforce it).
+
+Webhooks: set up a test endpoint (e.g., webhook.site) and subscribe; flipping status should send a signed POST.
+
+Docs: /docs loads Swagger; /openapi.json available; docs/*.md exist.
