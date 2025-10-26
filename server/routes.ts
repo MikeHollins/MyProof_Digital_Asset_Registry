@@ -424,6 +424,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Optional: Validate issuer DID (if DID_VALIDATION_ENABLED)
+      const DID_VALIDATION_ENABLED = process.env.DID_VALIDATION_ENABLED === "true";
+      if (DID_VALIDATION_ENABLED && body.issuerDid) {
+        const { isDidUsable } = await import("./services/did.js");
+        const didCheck = await isDidUsable(body.issuerDid);
+        if (!didCheck.ok) {
+          return res.status(400).json({
+            type: "about:blank",
+            title: "Invalid issuer DID",
+            status: 400,
+            detail: didCheck.reason || "DID resolution failed",
+          });
+        }
+      }
+
       // Verify the proof with issuer context
       const verification = await verifyProof(body.verifier_proof_ref, {
         issuerDid: body.issuerDid,
