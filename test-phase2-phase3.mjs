@@ -111,8 +111,8 @@ async function testPhase2AuditExport() {
   if (rootStatus === 200 && rootData.ok) {
     console.log('✅ Merkle root computed successfully');
     console.log(`   Root hash: ${rootData.root}`);
-    console.log(`   Leaf count: ${rootData.leaf_count}`);
-    console.log(`   Tree height: ${rootData.tree_height}`);
+    console.log(`   Leaf count: ${rootData.count || 0}`);
+    console.log(`   Algorithm: ${rootData.algorithm}`);
   } else {
     console.log('❌ Merkle root failed:', rootData.error);
     return;
