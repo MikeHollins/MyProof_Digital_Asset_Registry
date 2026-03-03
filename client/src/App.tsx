@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Switch, Route } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -8,7 +8,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import AdminSettings from "@/components/AdminSettings";
 import { Button } from "@/components/ui/button";
-import { Settings as SettingsIcon } from "lucide-react";
+import { Settings as SettingsIcon, Moon, Sun } from "lucide-react";
 import Dashboard from "@/pages/Dashboard";
 import Proofs from "@/pages/Proofs";
 import Verification from "@/pages/Verification";
@@ -17,6 +17,8 @@ import AuditLogs from "@/pages/AuditLogs";
 import Settings from "@/pages/Settings";
 import Demo from "@/pages/Demo";
 import ApiKeys from "@/pages/ApiKeys";
+import FailedMints from "@/pages/FailedMints";
+import Partners from "@/pages/Partners";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -29,6 +31,8 @@ function Router() {
       <Route path="/audit-logs" component={AuditLogs} />
       <Route path="/demo" component={Demo} />
       <Route path="/api-keys" component={ApiKeys} />
+      <Route path="/failed-mints" component={FailedMints} />
+      <Route path="/partners" component={Partners} />
       <Route path="/settings" component={Settings} />
       <Route component={NotFound} />
     </Switch>
@@ -38,7 +42,19 @@ function Router() {
 export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const isDev = import.meta.env.DEV;
-  
+
+  // Dark mode: localStorage > system preference > default light
+  const [dark, setDark] = useState(() => {
+    const stored = localStorage.getItem('par-theme');
+    if (stored) return stored === 'dark';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', dark);
+    localStorage.setItem('par-theme', dark ? 'dark' : 'light');
+  }, [dark]);
+
   const style = {
     "--sidebar-width": "16rem",
     "--sidebar-width-icon": "3rem",
@@ -61,6 +77,15 @@ export default function App() {
                       <span className="text-foreground font-medium">Operational</span>
                     </span>
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setDark(!dark)}
+                    data-testid="button-theme-toggle"
+                    className="h-8 w-8"
+                  >
+                    {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                  </Button>
                   {isDev && (
                     <Button
                       onClick={() => setSettingsOpen(true)}

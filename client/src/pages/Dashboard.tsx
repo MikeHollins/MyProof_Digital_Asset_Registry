@@ -1,22 +1,24 @@
 import { useQuery } from "@tanstack/react-query";
-import { Shield, CheckCircle2, List, Clock } from "lucide-react";
+import { Shield, CheckCircle2, List, Clock, AlertTriangle, Timer } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ProofFormatBadge } from "@/components/ProofFormatBadge";
 import { CidDisplay } from "@/components/CidDisplay";
 import type { DashboardStats, SystemHealth, ProofAsset } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
+import { motion } from "framer-motion";
 
-function StatCard({ 
-  icon: Icon, 
-  title, 
-  value, 
-  iconColor 
-}: { 
-  icon: any; 
-  title: string; 
-  value: string | number; 
+function StatCard({
+  icon: Icon,
+  title,
+  value,
+  iconColor
+}: {
+  icon: any;
+  title: string;
+  value: string | number;
   iconColor: string;
 }) {
   return (
@@ -34,11 +36,11 @@ function StatCard({
   );
 }
 
-function HealthIndicator({ 
-  service, 
-  status 
-}: { 
-  service: string; 
+function HealthIndicator({
+  service,
+  status
+}: {
+  service: string;
   status: 'healthy' | 'degraded' | 'down';
 }) {
   const statusColors = {
@@ -75,6 +77,7 @@ export default function Dashboard() {
 
   const { data: health, isLoading: healthLoading } = useQuery<SystemHealth>({
     queryKey: ['/api/health'],
+    refetchInterval: 30000, // Poll health every 30s
   });
 
   const { data: recentProofs, isLoading: proofsLoading } = useQuery<ProofAsset[]>({
@@ -91,31 +94,24 @@ export default function Dashboard() {
       </div>
 
       {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard
-          icon={Shield}
-          title="Total Proofs"
-          value={statsLoading ? "..." : (stats?.totalProofs ?? 0)}
-          iconColor="bg-primary"
-        />
-        <StatCard
-          icon={CheckCircle2}
-          title="Verified Today"
-          value={statsLoading ? "..." : (stats?.verifiedToday ?? 0)}
-          iconColor="bg-green-600"
-        />
-        <StatCard
-          icon={List}
-          title="Active Status Lists"
-          value={statsLoading ? "..." : (stats?.activeStatusLists ?? 0)}
-          iconColor="bg-blue-600"
-        />
-        <StatCard
-          icon={Clock}
-          title="Pending Verifications"
-          value={statsLoading ? "..." : (stats?.pendingVerifications ?? 0)}
-          iconColor="bg-yellow-600"
-        />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {[
+          { icon: Shield, title: "Total Proofs", value: statsLoading ? "..." : (stats?.totalProofs ?? 0), iconColor: "bg-primary" },
+          { icon: CheckCircle2, title: "Verified Today", value: statsLoading ? "..." : (stats?.verifiedToday ?? 0), iconColor: "bg-green-600" },
+          { icon: List, title: "Active Status Lists", value: statsLoading ? "..." : (stats?.activeStatusLists ?? 0), iconColor: "bg-blue-600" },
+          { icon: Clock, title: "Pending Verifications", value: statsLoading ? "..." : (stats?.pendingVerifications ?? 0), iconColor: "bg-yellow-600" },
+          { icon: AlertTriangle, title: "Failed Mints", value: statsLoading ? "..." : (stats?.failedMintCount ?? 0), iconColor: "bg-red-600" },
+          { icon: Timer, title: "Expiring Soon", value: statsLoading ? "..." : (stats?.expiringSoon ?? 0), iconColor: "bg-orange-500" },
+        ].map((card, i) => (
+          <motion.div
+            key={card.title}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, delay: i * 0.06 }}
+          >
+            <StatCard {...card} />
+          </motion.div>
+        ))}
       </div>
 
       {/* Recent Verifications Table */}
@@ -128,12 +124,14 @@ export default function Dashboard() {
             </Button>
           </Link>
         </div>
-        
+
         <Card>
           <CardContent className="p-0">
             {proofsLoading ? (
-              <div className="p-8 text-center text-muted-foreground">
-                Loading recent verifications...
+              <div className="p-6 space-y-3">
+                {[...Array(5)].map((_, i) => (
+                  <Skeleton key={i} className="h-10 w-full" />
+                ))}
               </div>
             ) : !recentProofs || recentProofs.length === 0 ? (
               <div className="p-8 text-center">
@@ -174,9 +172,8 @@ export default function Dashboard() {
                     {recentProofs.slice(0, 10).map((proof, idx) => (
                       <tr
                         key={proof.proofAssetId}
-                        className={`border-b border-border last:border-0 hover-elevate ${
-                          idx % 2 === 0 ? 'bg-background' : 'bg-muted/20'
-                        }`}
+                        className={`border-b border-border last:border-0 hover-elevate ${idx % 2 === 0 ? 'bg-background' : 'bg-muted/20'
+                          }`}
                         data-testid={`row-proof-${proof.proofAssetId}`}
                       >
                         <td className="p-4">

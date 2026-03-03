@@ -34,10 +34,13 @@ export const proofAssets = pgTable("proof_assets", {
   verificationTimestamp: timestamp("verification_timestamp", { withTimezone: true }),
   verificationMetadata: jsonb("verification_metadata"),
   verifierProofRef: text("verifier_proof_ref"),
+  ttlSeconds: integer("ttl_seconds"), // Phase 4B: Per-policy TTL (bar=86400, dispensary=604800, bank=7776000)
+  expiresAt: timestamp("expires_at", { withTimezone: true }), // Computed: created_at + ttl_seconds
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   commitmentIdx: uniqueIndex("ux_commitment").on(table.proofAssetCommitment),
+  proofDigestIdx: uniqueIndex("ux_partner_proof_digest").on(table.partnerId, table.proofDigest),
   statusIdx: index("ix_status").on(table.statusListUrl, table.statusListIndex),
   issuerIdx: index("ix_issuer").on(table.issuerDid),
   partnerIdx: index("ix_partner").on(table.partnerId),
@@ -91,10 +94,36 @@ export const partners = pgTable("partners", {
   partnerId: uuid("partner_id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   contactEmail: text("contact_email"),
+  webhookUrl: text("webhook_url"), // Phase 4C: URL for revocation/status change notifications
+  webhookSecret: text("webhook_secret"), // HMAC secret for webhook signature
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Mint Failures — Dead Letter Queue for failed registry mints
+// Phase 3D: Tracks failed async mints for retry and debugging
+export const mintFailures = pgTable("mint_failures", {
+  failureId: varchar("failure_id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  sessionId: text("session_id").notNull(),
+  tenantId: text("tenant_id").notNull(),
+  proofDigest: text("proof_digest").notNull(),
+  errorMessage: text("error_message").notNull(),
+  errorCode: text("error_code"),
+  httpStatus: integer("http_status"),
+  attempts: integer("attempts").notNull().default(0),
+  maxRetries: integer("max_retries").notNull().default(3),
+  resolved: boolean("resolved").notNull().default(false),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resolvedBy: text("resolved_by"), // 'auto_retry' | 'manual' | 'admin'
+  mintPayload: jsonb("mint_payload").notNull(), // Full mint request for replay
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  sessionIdx: index("ix_mint_fail_session").on(table.sessionId),
+  resolvedIdx: index("ix_mint_fail_resolved").on(table.resolved),
+  tenantIdx: index("ix_mint_fail_tenant").on(table.tenantId),
+}));
 
 // API Keys - Scoped API authentication with Argon2id hashing
 export const apiKeys = pgTable("api_keys", {
@@ -213,11 +242,11 @@ export const insertPartnerSchema = createInsertSchema(partners, {
   contactEmail: z.string().email().optional(),
 }).omit({ partnerId: true, createdAt: true, updatedAt: true });
 
-export const insertApiKeySchema = createInsertSchema(apiKeys).omit({ 
-  keyId: true, 
-  secretHash: true, 
-  createdAt: true, 
-  lastUsedAt: true 
+export const insertApiKeySchema = createInsertSchema(apiKeys).omit({
+  keyId: true,
+  secretHash: true,
+  createdAt: true,
+  lastUsedAt: true
 });
 
 // TypeScript types
@@ -243,6 +272,8 @@ export interface DashboardStats {
   verifiedToday: number;
   activeStatusLists: number;
   pendingVerifications: number;
+  failedMintCount: number;
+  expiringSoon: number;
 }
 
 export interface SystemHealth {
@@ -258,3 +289,6 @@ export interface VerificationResult {
   timestamp?: string;
   proofAssetId?: string;
 }
+
+export type MintFailure = typeof mintFailures.$inferSelect;
+

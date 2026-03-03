@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard,
   Shield,
@@ -7,6 +8,8 @@ import {
   PlayCircle,
   Settings,
   Key,
+  AlertTriangle,
+  Users,
 } from "lucide-react";
 import {
   Sidebar,
@@ -17,6 +20,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuBadge,
   SidebarHeader,
 } from "@/components/ui/sidebar";
 import { Link, useLocation } from "wouter";
@@ -38,6 +42,16 @@ const menuItems = [
     icon: CheckCircle,
   },
   {
+    title: "Partners",
+    url: "/partners",
+    icon: Users,
+  },
+  {
+    title: "API Keys",
+    url: "/api-keys",
+    icon: Key,
+  },
+  {
     title: "Status Lists",
     url: "/status-lists",
     icon: List,
@@ -48,14 +62,14 @@ const menuItems = [
     icon: FileText,
   },
   {
+    title: "Failed Mints",
+    url: "/failed-mints",
+    icon: AlertTriangle,
+  },
+  {
     title: "Demo",
     url: "/demo",
     icon: PlayCircle,
-  },
-  {
-    title: "API Keys",
-    url: "/api-keys",
-    icon: Key,
   },
   {
     title: "Settings",
@@ -66,6 +80,13 @@ const menuItems = [
 
 export function AppSidebar() {
   const [location] = useLocation();
+
+  // Fetch failed mint count for badge
+  const { data: statsData } = useQuery<{ failedMintCount?: number }>({
+    queryKey: ['/api/stats'],
+    refetchInterval: 60000, // poll every 60s
+  });
+  const failedMintCount = (statsData as any)?.failedMintCount ?? 0;
 
   return (
     <Sidebar>
@@ -97,6 +118,11 @@ export function AppSidebar() {
                         <span>{item.title}</span>
                       </Link>
                     </SidebarMenuButton>
+                    {item.title === "Failed Mints" && failedMintCount > 0 && (
+                      <SidebarMenuBadge className="bg-destructive text-destructive-foreground text-xs">
+                        {failedMintCount}
+                      </SidebarMenuBadge>
+                    )}
                   </SidebarMenuItem>
                 );
               })}

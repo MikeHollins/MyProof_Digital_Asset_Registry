@@ -1,10 +1,18 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { FileText, TreeDeciduous, Search, Copy, RefreshCw } from "lucide-react";
+import { FileText, TreeDeciduous, Search, Copy, RefreshCw, Filter } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { AuditEvent } from "@shared/schema";
@@ -40,10 +48,11 @@ export default function AuditLogs() {
 
   // Recent Events state
   const [searchQuery, setSearchQuery] = useState("");
+  const [eventTypeFilter, setEventTypeFilter] = useState("all");
   const [limit, setLimit] = useState(50);
 
   // Fetch recent events with search and pagination  
-  const { data: recentEventsData, isLoading: recentEventsLoading, refetch: refetchEvents } = useQuery<{ok: boolean; rows: RecentEvent[]}>({
+  const { data: recentEventsData, isLoading: recentEventsLoading, refetch: refetchEvents } = useQuery<{ ok: boolean; rows: RecentEvent[] }>({
     queryKey: ['/api/audit/events', searchQuery, limit],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -58,7 +67,13 @@ export default function AuditLogs() {
     },
   });
 
-  const recentEvents = recentEventsData?.rows || [];
+  const recentEvents = (recentEventsData?.rows || []).filter(e => {
+    if (eventTypeFilter === "all") return true;
+    return e.event_type === eventTypeFilter;
+  });
+
+  // Extract unique event types for filter
+  const eventTypes = Array.from(new Set((recentEventsData?.rows || []).map(e => e.event_type))).sort();
 
   const handleGetRoot = async () => {
     setLoadingRoot(true);
@@ -165,6 +180,17 @@ export default function AuditLogs() {
               Recent Events
             </CardTitle>
             <div className="flex items-center gap-2">
+              <Select value={eventTypeFilter} onValueChange={setEventTypeFilter}>
+                <SelectTrigger className="w-44" data-testid="select-event-type-filter">
+                  <SelectValue placeholder="All Event Types" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Types</SelectItem>
+                  {eventTypes.map(t => (
+                    <SelectItem key={t} value={t}>{t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -210,11 +236,11 @@ export default function AuditLogs() {
               </thead>
               <tbody className="divide-y">
                 {recentEventsLoading ? (
-                  <tr>
-                    <td colSpan={6} className="py-8 text-center text-muted-foreground">
-                      Loading events...
-                    </td>
-                  </tr>
+                  [...Array(5)].map((_, i) => (
+                    <tr key={i}>
+                      <td colSpan={6} className="py-3"><Skeleton className="h-8 w-full" /></td>
+                    </tr>
+                  ))
                 ) : recentEvents.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="py-8 text-center text-muted-foreground">
@@ -223,8 +249,16 @@ export default function AuditLogs() {
                   </tr>
                 ) : (
                   recentEvents.map((event) => (
-                    <tr key={event.event_id} data-testid={`row-event-${event.event_id}`}>
-                      <td className="py-3 font-mono text-xs">{truncate(event.event_id, 22)}</td>
+                    <tr key={event.event_id} className="hover:bg-muted/30" data-testid={`row-event-${event.event_id}`}>
+                      <td className="py-3">
+                        <button
+                          className="font-mono text-xs text-primary hover:underline cursor-pointer"
+                          onClick={() => copyToClipboard(event.event_id)}
+                          title="Click to copy event ID"
+                        >
+                          {truncate(event.event_id, 22)}
+                        </button>
+                      </td>
                       <td className="py-3">
                         <Badge variant="outline" data-testid={`badge-event-type-${event.event_id}`}>
                           {event.event_type}

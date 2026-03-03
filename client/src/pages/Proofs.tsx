@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Shield, Grid3x3, Table2, Filter, History, Activity } from "lucide-react";
+import { Shield, Grid3x3, Table2, Filter, History, Activity, Clock, Timer } from "lucide-react";
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -33,11 +35,33 @@ import type { ProofAsset, InsertProofAsset } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
 type ViewMode = "grid" | "table";
+type ExpiryFilter = "all" | "active" | "expiring" | "expired";
+
+// Format TTL seconds to human readable
+function formatTTL(seconds: number | null): string {
+  if (!seconds) return "—";
+  if (seconds >= 86400) return `${Math.round(seconds / 86400)}d`;
+  if (seconds >= 3600) return `${Math.round(seconds / 3600)}h`;
+  return `${seconds}s`;
+}
+
+// Expiry countdown chip
+function ExpiryChip({ expiresAt }: { expiresAt: string | null }) {
+  if (!expiresAt) return <span className="text-muted-foreground text-sm">—</span>;
+  const remaining = new Date(expiresAt).getTime() - Date.now();
+  if (remaining <= 0) return <Badge variant="destructive">Expired</Badge>;
+  const days = Math.floor(remaining / 86400000);
+  const hours = Math.floor((remaining % 86400000) / 3600000);
+  if (days < 1) return <Badge variant="outline" className="text-orange-600 border-orange-300"><Clock className="h-3 w-3 mr-1" />{hours}h</Badge>;
+  if (days < 7) return <Badge variant="outline" className="text-yellow-600 border-yellow-300"><Timer className="h-3 w-3 mr-1" />{days}d {hours}h</Badge>;
+  return <Badge variant="outline">{days}d</Badge>;
+}
 
 export default function Proofs() {
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [formatFilter, setFormatFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [expiryFilter, setExpiryFilter] = useState<ExpiryFilter>("all");
   const [didFilter, setDidFilter] = useState<string>("");
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
   const [selectedProof, setSelectedProof] = useState<ProofAsset | null>(null);
@@ -54,13 +78,13 @@ export default function Proofs() {
     contentCommitment: "",
     proofData: "",
   });
-  
+
   const { toast } = useToast();
 
   const { data: proofs, isLoading } = useQuery<ProofAsset[]>({
     queryKey: ['/api/proof-assets'],
   });
-  
+
   const registerMutation = useMutation({
     mutationFn: async (data: InsertProofAsset) => {
       const response = await apiRequest("POST", "/api/proof-assets", data);
@@ -89,12 +113,12 @@ export default function Proofs() {
       });
     },
   });
-  
+
   const verifyMutation = useMutation({
     mutationFn: async ({ proofId, freshProofParams }: { proofId: string; freshProofParams: FreshProofParams }) => {
       // Map frontend params to backend contract
       const payload: any = {};
-      
+
       if (freshProofParams.requireFreshProof) {
         payload.requireFreshProof = true;
         if (freshProofParams.proof_uri) {
@@ -104,7 +128,7 @@ export default function Proofs() {
           payload.proof_bytes = freshProofParams.proof_bytes;
         }
       }
-      
+
       const response = await apiRequest("POST", `/api/proof-assets/${proofId}/verify`, payload);
       return response.json();
     },
@@ -128,7 +152,7 @@ export default function Proofs() {
 
   const handleRegisterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     const payload: InsertProofAsset = {
       issuerDid: formData.issuerDid,
       proofFormat: formData.proofFormat as any,
@@ -145,7 +169,7 @@ export default function Proofs() {
       digestAlg: "sha2-256",
       proofDigest: formData.contentCommitment,
     };
-    
+
     registerMutation.mutate(payload);
   };
 
@@ -161,9 +185,9 @@ export default function Proofs() {
 
   const handleConfirmVerify = (freshProofParams: FreshProofParams) => {
     if (proofToVerify) {
-      verifyMutation.mutate({ 
+      verifyMutation.mutate({
         proofId: proofToVerify.proofAssetId,
-        freshProofParams 
+        freshProofParams
       });
     }
   };
@@ -182,6 +206,9 @@ export default function Proofs() {
     if (formatFilter !== "all" && proof.proofFormat !== formatFilter) return false;
     if (statusFilter !== "all" && proof.verificationStatus !== statusFilter) return false;
     if (didFilter && !proof.issuerDid.toLowerCase().includes(didFilter.toLowerCase())) return false;
+    if (expiryFilter === "expired" && !(proof.expiresAt && new Date(proof.expiresAt) < new Date())) return false;
+    if (expiryFilter === "expiring" && !(proof.expiresAt && new Date(proof.expiresAt) > new Date() && new Date(proof.expiresAt).getTime() - Date.now() < 86400000)) return false;
+    if (expiryFilter === "active" && proof.expiresAt && new Date(proof.expiresAt) < new Date()) return false;
     return true;
   });
 
@@ -271,14 +298,31 @@ export default function Proofs() {
                 data-testid="input-did-filter"
               />
             </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="expiry-filter">Expiry Status</Label>
+              <Select value={expiryFilter} onValueChange={(v) => setExpiryFilter(v as ExpiryFilter)}>
+                <SelectTrigger id="expiry-filter" data-testid="select-expiry-filter">
+                  <SelectValue placeholder="All" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="expiring">Expiring Soon</SelectItem>
+                  <SelectItem value="expired">Expired</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>
 
       {/* Content */}
       {isLoading ? (
-        <div className="p-12 text-center text-muted-foreground">
-          Loading proof assets...
+        <div className="space-y-3">
+          {[...Array(3)].map((_, i) => (
+            <Skeleton key={i} className="h-32 w-full rounded-lg" />
+          ))}
         </div>
       ) : !filteredProofs || filteredProofs.length === 0 ? (
         <Card>
@@ -291,7 +335,7 @@ export default function Proofs() {
                 : "Get started by registering your first proof"}
             </p>
             {(!proofs || proofs.length === 0) && (
-              <Button 
+              <Button
                 onClick={() => setIsRegisterModalOpen(true)}
                 data-testid="button-register-proof"
               >
@@ -336,21 +380,27 @@ export default function Proofs() {
                     metadata={proof.verificationMetadata}
                   />
                 </div>
+                {proof.ttlSeconds && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">TTL: {formatTTL(proof.ttlSeconds)}</span>
+                    <ExpiryChip expiresAt={proof.expiresAt as string | null} />
+                  </div>
+                )}
               </CardContent>
               <CardFooter className="pt-3 border-t border-card-border flex flex-col gap-2">
                 <div className="flex gap-2 w-full">
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    className="flex-1" 
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
                     onClick={() => handleViewDetails(proof)}
                     data-testid={`button-details-${proof.proofAssetId}`}
                   >
                     View Details
                   </Button>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
+                  <Button
+                    variant="outline"
+                    size="sm"
                     className="flex-1"
                     onClick={() => handleVerifyClick(proof)}
                     data-testid={`button-verify-${proof.proofAssetId}`}
@@ -359,9 +409,9 @@ export default function Proofs() {
                   </Button>
                 </div>
                 <div className="flex gap-2 w-full">
-                  <Button 
-                    variant="ghost" 
-                    size="sm" 
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     className="flex-1"
                     onClick={() => handleViewTransferHistory(proof.proofAssetId)}
                     data-testid={`button-transfer-history-${proof.proofAssetId}`}
@@ -369,9 +419,9 @@ export default function Proofs() {
                     <History className="h-4 w-4 mr-1" />
                     Transfers
                   </Button>
-                  <Button 
-                    variant="ghost" 
-                    size="sm" 
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     className="flex-1"
                     onClick={() => handleViewUsageHistory(proof.proofAssetId)}
                     data-testid={`button-usage-history-${proof.proofAssetId}`}
@@ -407,6 +457,12 @@ export default function Proofs() {
                       Status
                     </th>
                     <th className="text-left p-4 text-sm font-medium text-muted-foreground">
+                      TTL
+                    </th>
+                    <th className="text-left p-4 text-sm font-medium text-muted-foreground">
+                      Expires
+                    </th>
+                    <th className="text-left p-4 text-sm font-medium text-muted-foreground">
                       Created
                     </th>
                     <th className="text-right p-4 text-sm font-medium text-muted-foreground">
@@ -418,9 +474,8 @@ export default function Proofs() {
                   {filteredProofs.map((proof, idx) => (
                     <tr
                       key={proof.proofAssetId}
-                      className={`border-b border-border last:border-0 hover-elevate ${
-                        idx % 2 === 0 ? 'bg-background' : 'bg-muted/20'
-                      }`}
+                      className={`border-b border-border last:border-0 hover-elevate ${idx % 2 === 0 ? 'bg-background' : 'bg-muted/20'
+                        }`}
                       data-testid={`row-proof-${proof.proofAssetId}`}
                     >
                       <td className="p-4">
@@ -446,37 +501,43 @@ export default function Proofs() {
                           metadata={proof.verificationMetadata}
                         />
                       </td>
+                      <td className="p-4 text-sm font-mono text-muted-foreground">
+                        {formatTTL(proof.ttlSeconds)}
+                      </td>
+                      <td className="p-4">
+                        <ExpiryChip expiresAt={proof.expiresAt as string | null} />
+                      </td>
                       <td className="p-4 text-sm text-muted-foreground">
                         {new Date(proof.createdAt).toLocaleDateString()}
                       </td>
                       <td className="p-4 text-right">
                         <div className="flex justify-end gap-1">
-                          <Button 
-                            variant="ghost" 
+                          <Button
+                            variant="ghost"
                             size="sm"
                             onClick={() => handleViewDetails(proof)}
                             data-testid={`button-view-${proof.proofAssetId}`}
                           >
                             View
                           </Button>
-                          <Button 
-                            variant="ghost" 
+                          <Button
+                            variant="ghost"
                             size="sm"
                             onClick={() => handleVerifyClick(proof)}
                             data-testid={`button-verify-${proof.proofAssetId}`}
                           >
                             Verify
                           </Button>
-                          <Button 
-                            variant="ghost" 
+                          <Button
+                            variant="ghost"
                             size="sm"
                             onClick={() => handleViewTransferHistory(proof.proofAssetId)}
                             data-testid={`button-transfers-${proof.proofAssetId}`}
                           >
                             <History className="h-4 w-4" />
                           </Button>
-                          <Button 
-                            variant="ghost" 
+                          <Button
+                            variant="ghost"
                             size="sm"
                             onClick={() => handleViewUsageHistory(proof.proofAssetId)}
                             data-testid={`button-usage-${proof.proofAssetId}`}
@@ -493,7 +554,7 @@ export default function Proofs() {
           </CardContent>
         </Card>
       )}
-      
+
       {/* Proof Details Dialog */}
       <ProofDetailsDialog
         proof={selectedProof}
@@ -545,7 +606,7 @@ export default function Proofs() {
                 data-testid="input-subject-did"
               />
             </div>
-            
+
             <div className="space-y-2">
               <Label htmlFor="issuer-did">
                 Issuer DID <span className="text-destructive">*</span>
@@ -560,7 +621,7 @@ export default function Proofs() {
                 data-testid="input-issuer-did"
               />
             </div>
-            
+
             <div className="space-y-2">
               <Label htmlFor="proof-format">
                 Proof Format <span className="text-destructive">*</span>
@@ -580,7 +641,7 @@ export default function Proofs() {
                 </SelectContent>
               </Select>
             </div>
-            
+
             <div className="space-y-2">
               <Label htmlFor="content-commitment">
                 Content Commitment <span className="text-destructive">*</span>
@@ -598,7 +659,7 @@ export default function Proofs() {
                 Hash or CID of the content being proven
               </p>
             </div>
-            
+
             <div className="space-y-2">
               <Label htmlFor="proof-data">
                 Proof Data <span className="text-destructive">*</span>
@@ -616,7 +677,7 @@ export default function Proofs() {
                 JSON object containing proof data
               </p>
             </div>
-            
+
             <DialogFooter>
               <Button
                 type="button"

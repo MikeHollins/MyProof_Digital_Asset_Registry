@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Key, Plus, Trash2, Settings, Copy, Check, AlertCircle, RefreshCw, ShieldAlert } from "lucide-react";
+import { Key, Plus, Trash2, Settings, Copy, Check, AlertCircle, RefreshCw, ShieldAlert, Gauge } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
@@ -55,11 +56,11 @@ async function fetchJSON(url: string, init?: RequestInit) {
     "Content-Type": "application/json",
     ...authHeaders(),
   };
-  
+
   if (init?.headers) {
     Object.assign(headers, init.headers);
   }
-  
+
   const res = await fetch(url, {
     ...init,
     headers,
@@ -82,6 +83,7 @@ interface ApiKey {
   partnerId: string;
   scopes: string;
   status: string;
+  ratePerMinute: number | null;
   notBefore: string;
   notAfter: string | null;
   createdAt: string;
@@ -125,7 +127,7 @@ function AdminTokenSettings({ open, onOpenChange }: { open: boolean; onOpenChang
     try {
       const data = await fetch("/api/admin/bootstrap", { method: "POST" }).then(r => r.json());
       if (!data.ok) throw new Error(data.error);
-      
+
       setToken(data.token);
       toast({
         title: "Bootstrap successful",
@@ -164,7 +166,7 @@ function AdminTokenSettings({ open, onOpenChange }: { open: boolean; onOpenChang
               Format: keyId.secret (e.g., mpk_abc123.hex64...)
             </p>
           </div>
-          
+
           {process.env.NODE_ENV !== 'production' && (
             <div className="space-y-2 p-3 border rounded bg-muted/30">
               <p className="text-sm font-medium">Development Only: Bootstrap</p>
@@ -563,7 +565,11 @@ export default function ApiKeys() {
         </CardHeader>
         <CardContent>
           {keysLoading || partnersLoading ? (
-            <div className="text-center py-8 text-muted-foreground">Loading...</div>
+            <div className="space-y-3 py-4">
+              {[...Array(3)].map((_, i) => (
+                <Skeleton key={i} className="h-10 w-full" />
+              ))}
+            </div>
           ) : keysWithPartners.filter((k) => k.status === "active").length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
               No active API keys. Generate one to get started.
@@ -576,6 +582,7 @@ export default function ApiKeys() {
                     <th className="pb-3 font-medium">Key ID</th>
                     <th className="pb-3 font-medium">Partner</th>
                     <th className="pb-3 font-medium">Scopes</th>
+                    <th className="pb-3 font-medium">Rate Limit</th>
                     <th className="pb-3 font-medium">Created</th>
                     <th className="pb-3 font-medium">Last Used</th>
                     <th className="pb-3 font-medium text-right">Actions</th>
@@ -598,6 +605,12 @@ export default function ApiKeys() {
                                 {scope}
                               </span>
                             ))}
+                          </div>
+                        </td>
+                        <td className="py-3">
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Gauge className="h-3 w-3" />
+                            <span className="text-xs font-mono">{(key as any).ratePerMinute || 300}/min</span>
                           </div>
                         </td>
                         <td className="py-3 text-muted-foreground">

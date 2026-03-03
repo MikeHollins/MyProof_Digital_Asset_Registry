@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { jcs } from "../plugins/canonicalize";
 
 /**
  * Merkle Tree utilities for audit transparency
@@ -18,13 +19,13 @@ function sha256(buf: Buffer | string): Buffer {
 /**
  * Compute leaf hash for audit event
  * 
- * Creates deterministic hash of event data using JSON canonicalization
+ * Creates deterministic hash of event data using RFC 8785 JSON Canonicalization Scheme
  * 
  * @param event - Audit event object
  * @returns SHA-256 hash of canonicalized event JSON
  */
 export function leafHash(event: any): Buffer {
-  const canonical = JSON.stringify(event);
+  const canonical = jcs(event);
   return sha256(Buffer.from(canonical));
 }
 
