@@ -71,15 +71,34 @@ const apiLimiter = rateLimit({
     // First priority: DID from header (most privacy-preserving)
     const did = req.headers['x-did'] as string;
     if (did) return `did:${did}`;
-    
+
     // Second priority: Stable client ID
     const clientId = req.headers['x-client-id'] as string;
     if (clientId) return `client:${clientId}`;
-    
+
     // Fallback: Use library's IPv6-safe IP key generator
     // This is required to prevent IPv6 subnet bypass attacks
     return `ip:${ipKeyGenerator(req as any)}`;
   },
+});
+
+// GAP 11: Restrictive CORS — mutation endpoints are server-to-server only
+// No external browser origins should mint proof assets.
+// Dashboard UI is served same-origin, so no CORS headers are needed for it.
+app.use('/api/proof-assets', (req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers['origin'];
+  // If request has an Origin header, it's a browser cross-origin request
+  if (origin && req.method === 'POST') {
+    return res.status(403).json({
+      error: 'cors_blocked',
+      detail: 'Minting is server-to-server only. Browser cross-origin requests are not permitted.',
+    });
+  }
+  // For preflight OPTIONS, deny cross-origin
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
 });
 
 // Apply rate limiting to API routes
@@ -111,7 +130,7 @@ declare module 'http' {
 
 // Body parser with size limits (64KB cap for security)
 // Capture raw body for signature verification (needed for JWS/JWT validation)
-app.use(express.json({ 
+app.use(express.json({
   limit: '64kb',
   verify: (req, res, buf, encoding) => {
     // Store raw buffer for signature verification
@@ -152,7 +171,7 @@ function problemDetails(
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   const traceId = (req as any).traceId;
   console.error(`[error] trace_id=${traceId}`, err.message);
-  
+
   // Check for specific error types
   if (err.name === 'PayloadTooLargeError') {
     return problemDetails(
@@ -165,7 +184,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
       traceId
     );
   }
-  
+
   if (err.name === 'SyntaxError' && 'body' in err) {
     return problemDetails(
       res,
@@ -177,7 +196,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
       traceId
     );
   }
-  
+
   // Generic error fallback
   problemDetails(
     res,
@@ -195,12 +214,12 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   const openApiSpec = JSON.parse(
     readFileSync(join(__dirname, "openapi.json"), "utf8")
   );
-  
+
   // Serve OpenAPI spec as JSON
   app.get("/openapi.json", (_req, res) => {
     res.json(openApiSpec);
   });
-  
+
   // Serve Swagger UI documentation
   app.use(
     "/docs",
@@ -216,21 +235,21 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
       },
     })
   );
-  
+
   // Register main routes first (initializes receipt keys)
   const server = await registerRoutes(app);
-  
+
   // Register status list routes (database-backed W3C Bitstring Status Lists)
   const { registerStatusListRoutes } = await import("./routes-status-list");
   registerStatusListRoutes(app);
-  
+
   // Register demo routes (requires receipt keys to be initialized)
   await registerDemoRoutes(app);
-  
+
   // Register admin API key management routes
   const { registerAdminApiKeys } = await import("./routes-admin-apikeys");
   registerAdminApiKeys(app);
-  
+
   // Register admin ping route (dev only)
   const { registerAdminPing } = await import("./routes-admin-ping");
   registerAdminPing(app);
@@ -279,12 +298,12 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   // Background cleanup task: Remove expired JTI entries every 5 minutes
   // This prevents unbounded growth of the jti_replay table
   const { cleanupExpiredJti } = await import("./services/jti-repo");
-  
+
   // Run cleanup immediately on startup
   cleanupExpiredJti().catch(err => {
     console.error('[jti-cleanup] Initial cleanup failed:', err);
   });
-  
+
   // Schedule periodic cleanup
   setInterval(async () => {
     try {
@@ -293,6 +312,6 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
       console.error('[jti-cleanup] Periodic cleanup failed:', err);
     }
   }, 5 * 60 * 1000); // Every 5 minutes
-  
+
   log('[jti-cleanup] Background JTI cleanup task started (runs every 5 minutes)');
 })();

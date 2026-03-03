@@ -7,7 +7,7 @@ import { generateProofCommitment, generateCID, normalizeUrl, validateDigestEncod
 import { verifyProof } from "./proof-verification";
 import { generateReceipt, generateTestKeypair } from "./receipt-service";
 import { notFound, conflict, internalError, badRequest, sendError } from "./utils/errors";
-import { apiKeyAuth, verifyBodySignature } from "./middleware/apiKey";
+import { apiKeyAuth, verifyBodySignature, requireScopes } from "./middleware/apiKey";
 
 // Generate signing keypair for receipts (in production, use KMS/HSM)
 let receiptSigningKey: JsonWebKey | null = null;
@@ -456,8 +456,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Create new proof asset (REQUIRES API KEY + BODY SIGNATURE + RATE LIMIT)
-  app.post("/api/proof-assets", apiKeyAuth, verifyBodySignature, perKeyRateLimit, async (req, res) => {
+  // Create new proof asset (REQUIRES API KEY + SCOPE + BODY SIGNATURE + RATE LIMIT)
+  // GAP 10: requireScopes(['assets:mint']) enforces least-privilege
+  app.post("/api/proof-assets", apiKeyAuth, requireScopes(['assets:mint']), verifyBodySignature, perKeyRateLimit, async (req, res) => {
     try {
       // Validate request body
       const body = insertProofAssetSchema.parse(req.body);
@@ -561,36 +562,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const ttlSeconds = TTL_POLICY[policyChannel] || TTL_POLICY['default'];
       const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
-      // Create proof asset with verification metadata
-      const proof = await storage.createProofAsset({
-        proofAssetCommitment,
-        issuerDid: body.issuerDid,
-        partnerId,
-        subjectBinding: body.subjectBinding,
-        proofFormat: body.proofFormat,
-        proofDigest: body.proofDigest,
-        digestAlg: body.digestAlg,
-        proofUri: body.verifier_proof_ref.proof_uri,
-        constraintHash: body.constraintHash,
-        constraintCid: body.constraintCid,
-        policyHash: body.policyHash,
-        policyCid: body.policyCid,
-        circuitOrSchemaId: body.circuitOrSchemaId,
-        circuitCid: body.circuitCid,
-        schemaCid: body.schemaCid,
-        license: body.license,
-        statusListUrl: statusRef.statusListUrl,
-        statusListIndex: statusRef.statusListIndex,
-        statusPurpose: statusRef.statusPurpose,
-        verificationStatus: "verified",
-        verificationAlgorithm: verification.algorithm,
-        verificationPublicKeyDigest: verification.publicKeyDigest,
-        verificationTimestamp: verification.verifiedAt ? new Date(verification.verifiedAt) : new Date(),
-        verificationMetadata: verification.derivedFacts,
-        verifierProofRef,
-        ttlSeconds,
-        expiresAt,
-      });
+      // GAP 9: Wrap insert in 23505-safe try-catch for concurrent insert race condition
+      let proof;
+      try {
+        proof = await storage.createProofAsset({
+          proofAssetCommitment,
+          issuerDid: body.issuerDid,
+          partnerId,
+          subjectBinding: body.subjectBinding,
+          proofFormat: body.proofFormat,
+          proofDigest: body.proofDigest,
+          digestAlg: body.digestAlg,
+          proofUri: body.verifier_proof_ref.proof_uri,
+          constraintHash: body.constraintHash,
+          constraintCid: body.constraintCid,
+          policyHash: body.policyHash,
+          policyCid: body.policyCid,
+          circuitOrSchemaId: body.circuitOrSchemaId,
+          circuitCid: body.circuitCid,
+          schemaCid: body.schemaCid,
+          license: body.license,
+          statusListUrl: statusRef.statusListUrl,
+          statusListIndex: statusRef.statusListIndex,
+          statusPurpose: statusRef.statusPurpose,
+          verificationStatus: "verified",
+          verificationAlgorithm: verification.algorithm,
+          verificationPublicKeyDigest: verification.publicKeyDigest,
+          verificationTimestamp: verification.verifiedAt ? new Date(verification.verifiedAt) : new Date(),
+          verificationMetadata: verification.derivedFacts,
+          verifierProofRef,
+          ttlSeconds,
+          expiresAt,
+        });
+      } catch (insertErr: any) {
+        // Postgres unique violation — concurrent insert won the race
+        if (insertErr.code === '23505') {
+          const raceWinner = await storage.getProofAssetByDigest(partnerId, body.proofDigest);
+          if (raceWinner) {
+            return res.status(200).json({
+              ...raceWinner,
+              _idempotent: true,
+              _message: "Concurrent insert resolved — returning existing asset",
+            });
+          }
+        }
+        throw insertErr;
+      }
 
       // Create audit event
       await storage.createAuditEvent({

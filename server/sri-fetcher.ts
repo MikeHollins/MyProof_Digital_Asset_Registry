@@ -54,7 +54,7 @@ export async function fetchProofWithSRI(
   const maxSize = options.maxSizeBytes ?? PROOF_MAX_SIZE_BYTES;
   const timeout = options.timeoutMs ?? PROOF_FETCH_TIMEOUT_MS;
   const allowAnyHost = options.allowAnyHost ?? (process.env.NODE_ENV !== 'production');
-  
+
   // Parse and validate URL
   let url: URL;
   try {
@@ -62,7 +62,7 @@ export async function fetchProofWithSRI(
   } catch (error: any) {
     throw new Error(`Invalid proof URI: ${error.message}`);
   }
-  
+
   // Enforce HTTPS-only (security requirement)
   if (url.protocol !== 'https:') {
     // In development, allow data: URIs for testing
@@ -71,16 +71,38 @@ export async function fetchProofWithSRI(
     }
     throw new Error(`Unsupported protocol: ${url.protocol}. Only HTTPS allowed for proof fetching.`);
   }
-  
+
   // Check host allowlist (production security)
   if (!allowAnyHost && !ALLOWED_HOSTS.has(url.hostname)) {
     throw new Error(`Host not in allowlist: ${url.hostname}. Configure PROOF_ALLOWED_HOSTS environment variable.`);
   }
-  
+
+  // GAP 8: Block IP literals and internal/reserved ranges (SSRF protection)
+  const hostname = url.hostname;
+  // Strip IPv6 brackets for checking
+  const bareHost = hostname.startsWith('[') ? hostname.slice(1, -1) : hostname;
+
+  // Block known internal/reserved IPv4 ranges
+  const BLOCKED_PREFIXES = [
+    '10.', '172.16.', '172.17.', '172.18.', '172.19.',
+    '172.20.', '172.21.', '172.22.', '172.23.', '172.24.',
+    '172.25.', '172.26.', '172.27.', '172.28.', '172.29.',
+    '172.30.', '172.31.', '192.168.', '127.', '169.254.',
+    '0.', '100.64.',
+  ];
+  const BLOCKED_EXACT = ['localhost', '::1', '0000:0000:0000:0000:0000:0000:0000:0001'];
+
+  if (BLOCKED_PREFIXES.some(p => bareHost.startsWith(p)) ||
+    BLOCKED_EXACT.includes(bareHost.toLowerCase()) ||
+    // Block raw IPv4 literals even if not in reserved ranges (defense in depth)
+    /^\d{1,3}(\.\d{1,3}){3}$/.test(bareHost)) {
+    throw new Error(`SSRF blocked: internal or IP-literal host ${hostname}`);
+  }
+
   // Fetch with timeout and size limits
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
-  
+
   try {
     const response = await fetch(url.href, {
       signal: controller.signal,
@@ -88,45 +110,45 @@ export async function fetchProofWithSRI(
         'User-Agent': 'PAR-Registry/1.0',
       },
     });
-    
+
     if (!response.ok) {
       throw new Error(`Proof fetch failed: HTTP ${response.status} ${response.statusText}`);
     }
-    
+
     if (!response.body) {
       throw new Error('No response body received');
     }
-    
+
     // Stream with size cap and digest validation
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
     const hash = createHash('sha256');
-    
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
+
       // Enforce size cap (prevent DoS)
       totalBytes += value.byteLength;
       if (totalBytes > maxSize) {
         reader.cancel();
         throw new Error(`Proof exceeds maximum size: ${totalBytes} > ${maxSize} bytes`);
       }
-      
+
       // Update hash
       hash.update(value);
       chunks.push(value);
     }
-    
+
     // Validate digest (SRI)
     const computedDigest = hash.digest('hex').toLowerCase();
     const normalizedExpected = expectedDigest.toLowerCase();
-    
+
     if (computedDigest !== normalizedExpected) {
       throw new Error(`SRI digest mismatch: expected ${normalizedExpected}, got ${computedDigest}`);
     }
-    
+
     // Concatenate chunks
     const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
     const result = new Uint8Array(totalLength);
@@ -135,9 +157,9 @@ export async function fetchProofWithSRI(
       result.set(chunk, offset);
       offset += chunk.length;
     }
-    
+
     return result;
-    
+
   } finally {
     clearTimeout(timer);
   }
@@ -153,26 +175,26 @@ function fetchDataUri(dataUri: string, expectedDigest: string): Uint8Array {
     if (!match) {
       throw new Error('Invalid data URI format');
     }
-    
+
     const [, , isBase64, data] = match;
     let bytes: Uint8Array;
-    
+
     if (isBase64) {
       bytes = Uint8Array.from(Buffer.from(data, 'base64'));
     } else {
       bytes = Uint8Array.from(Buffer.from(decodeURIComponent(data), 'utf8'));
     }
-    
+
     // Validate digest
     const hash = createHash('sha256');
     hash.update(bytes);
     const computedDigest = hash.digest('hex').toLowerCase();
     const normalizedExpected = expectedDigest.toLowerCase();
-    
+
     if (computedDigest !== normalizedExpected) {
       throw new Error(`SRI digest mismatch for data URI: expected ${normalizedExpected}, got ${computedDigest}`);
     }
-    
+
     return bytes;
   } catch (error: any) {
     throw new Error(`Failed to parse data URI: ${error.message}`);
@@ -188,12 +210,12 @@ function fetchDataUri(dataUri: string, expectedDigest: string): Uint8Array {
 export function isValidProofUri(proofUri: string): boolean {
   try {
     const url = new URL(proofUri);
-    
+
     // Production: HTTPS only
     if (process.env.NODE_ENV === 'production') {
       return url.protocol === 'https:';
     }
-    
+
     // Development: HTTPS or data:
     return url.protocol === 'https:' || url.protocol === 'data:';
   } catch {

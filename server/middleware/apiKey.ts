@@ -11,6 +11,21 @@ declare global {
 
 const REDACT_KEYS = ['authorization', 'x-api-key', 'x-partner-key', 'api-key', 'apikey', 'token', 'secret'];
 
+// ============================================================================
+// GAP 4: Replay protection — in-memory traceId cache
+// Upgrade to Redis via REDIS_URL for multi-instance deployments.
+// ============================================================================
+const TRACE_CACHE = new Map<string, number>();
+const TRACE_WINDOW_MS = 120_000; // 2 minutes (covers ±60s skew window)
+
+// Cleanup stale entries every 5 minutes
+setInterval(() => {
+  const cutoff = Date.now() - TRACE_WINDOW_MS;
+  for (const [id, ts] of TRACE_CACHE) {
+    if (ts < cutoff) TRACE_CACHE.delete(id);
+  }
+}, 300_000).unref(); // unref so timer doesn't prevent process exit
+
 export async function apiKeyAuth(req: Request, res: Response, next: NextFunction) {
   try {
     const header = (req.headers['x-api-key'] as string) || (req.headers['authorization'] as string);
@@ -57,6 +72,7 @@ export function requireScopes(required: string[]) {
  * 1. Request came from a holder of the API key (not just header replay)
  * 2. Body has not been tampered with in transit
  * 3. Timestamp is within ±60s (prevents replay)
+ * 4. traceId is unique within window (prevents replay — GAP 4)
  * 
  * Only rejects if signature header IS present but invalid.
  * If header is absent, passes through (backward compatibility).
@@ -91,9 +107,23 @@ export function verifyBodySignature(req: Request, res: Response, next: NextFunct
     });
   }
 
-  // Recompute body hash and verify HMAC
+  // GAP 4: Replay protection — reject duplicate traceIds within window
+  if (TRACE_CACHE.has(traceId)) {
+    return res.status(403).json({
+      error: 'replay_detected',
+      detail: 'Duplicate traceId rejected'
+    });
+  }
+
+  // GAP 12: Use raw body bytes for hash — prevents re-serialization mismatch
+  // Express raw body captured via verify callback in index.ts
   const { createHash, createHmac } = require('node:crypto');
-  const bodyHash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex');
+  const rawBody = (req as any).rawBody;
+  const bodySource = rawBody
+    ? (typeof rawBody === 'string' ? rawBody : rawBody.toString('utf-8'))
+    : JSON.stringify(req.body);
+
+  const bodyHash = createHash('sha256').update(bodySource).digest('hex');
   const expectedPayload = `${traceId}:${bodyHash}:${timestamp}`;
   const expectedSignature = createHmac('sha256', apiKey)
     .update(expectedPayload)
@@ -105,6 +135,9 @@ export function verifyBodySignature(req: Request, res: Response, next: NextFunct
       detail: 'Body signature verification failed'
     });
   }
+
+  // Signature valid — record traceId to prevent replay
+  TRACE_CACHE.set(traceId, Date.now());
 
   return next();
 }
