@@ -1,7 +1,13 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes.js";
 import { registerDemoRoutes } from "./routes-demo.js";
-import { setupVite, serveStatic, log } from "./vite.js";
+// vite.js imported dynamically to avoid loading rollup/vite on Vercel
+const log = (message: string) => {
+  const formattedTime = new Date().toLocaleTimeString("en-US", {
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
+  });
+  console.log(`${formattedTime} [express] ${message}`);
+};
 import helmet from "helmet";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import { createHash, randomBytes } from "crypto";
@@ -289,12 +295,12 @@ export const initApp = async () => {
     throw err;
   });
 
-  // Setup Vite or static serving
-  if (app.get("env") === "development") {
-    await setupVite(app, server);
-  } else {
-    // Vercel handles static asset serving natively
-    if (!process.env.VERCEL) {
+  // Setup Vite or static serving (dynamic import to avoid loading rollup/vite on Vercel)
+  if (!process.env.VERCEL) {
+    const { setupVite, serveStatic } = await import("./vite.js");
+    if (app.get("env") === "development") {
+      await setupVite(app, server);
+    } else {
       serveStatic(app);
     }
   }
