@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
 import { db } from "./db.js";
-import { proofAssets, assetTransfers } from "@shared/schema";
+import { proofAssets, assetTransfers } from "../shared/schema.js";
 import { eq } from "drizzle-orm";
 
 /**
@@ -74,7 +74,7 @@ export function registerTransferRoutes(app: Express) {
         .returning();
 
       // Create audit event
-      const { auditEvents } = await import("@shared/schema");
+      const { auditEvents } = await import("../shared/schema.js");
       const crypto = await import("node:crypto");
       await db.insert(auditEvents).values({
         eventType: "TRANSFER",

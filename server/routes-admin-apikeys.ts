@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
 import { db } from "./db.js";
-import { partners, apiKeys } from "@shared/schema";
+import { partners, apiKeys } from "../shared/schema.js";
 import { issueApiKey, revokeApiKey, rotateApiKey, type Scope } from "./services/apiKeys.js";
 import { requireScopes, apiKeyAuth } from "./middleware/apiKey.js";
 import { eq } from "drizzle-orm";

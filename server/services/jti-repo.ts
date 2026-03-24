@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { jtiReplay } from "@shared/schema";
+import { jtiReplay } from "../../shared/schema.js";
 import { eq, lt } from "drizzle-orm";
 
 /**

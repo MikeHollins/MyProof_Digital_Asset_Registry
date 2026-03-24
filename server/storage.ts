@@ -6,7 +6,7 @@ import {
   type StatusList,
   type DashboardStats,
   type SystemHealth,
-} from "@shared/schema";
+} from "../shared/schema.js";
 
 export interface IStorage {
   // Proof Assets
@@ -265,7 +265,7 @@ export class MemStorage implements IStorage {
 
 // PostgreSQL Storage Implementation
 import { db } from "./db.js";
-import { proofAssets as proofAssetsTable, auditEvents as auditEventsTable, statusLists as statusListsTable, mintFailures as mintFailuresTable, partners as partnersTable } from "@shared/schema";
+import { proofAssets as proofAssetsTable, auditEvents as auditEventsTable, statusLists as statusListsTable, mintFailures as mintFailuresTable, partners as partnersTable } from "../shared/schema.js";
 import { eq, desc, sql, and } from "drizzle-orm";
 
 export class PostgresStorage implements IStorage {

@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { apiKeys, partners } from "@shared/schema";
+import { apiKeys, partners } from "../../shared/schema.js";
 import { eq } from "drizzle-orm";
 import { randomBytesHex, shortId, deriveSecretForHash, hashSecret, verifySecret } from "../utils/crypto";
 

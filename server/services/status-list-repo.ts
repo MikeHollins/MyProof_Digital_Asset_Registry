@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { statusLists } from "@shared/schema";
+import { statusLists } from "../../shared/schema.js";
 import { eq } from "drizzle-orm";
 import crypto from "node:crypto";
 import zlib from "node:zlib";

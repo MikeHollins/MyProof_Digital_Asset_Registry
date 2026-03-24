@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
 import { db } from "./db.js";
-import { proofAssets, assetUsage } from "@shared/schema";
+import { proofAssets, assetUsage } from "../shared/schema.js";
 import { eq, sql } from "drizzle-orm";
 import { SignJWT, exportJWK } from "jose";
 
@@ -104,7 +104,7 @@ export function registerUsageRoutes(app: Express) {
       const usageReceipt = await signUsageReceipt(receiptPayload);
 
       // Create audit event
-      const { auditEvents } = await import("@shared/schema");
+      const { auditEvents } = await import("../shared/schema.js");
       const crypto = await import("node:crypto");
       await db.insert(auditEvents).values({
         eventType: "USE",

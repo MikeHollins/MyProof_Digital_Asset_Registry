@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage.js";
-import { insertProofAssetSchema, updateStatusListSchema } from "@shared/schema";
+import { insertProofAssetSchema, updateStatusListSchema } from "../shared/schema.js";
 import { z } from "zod";
 import { generateProofCommitment, generateCID, normalizeUrl, validateDigestEncoding } from "./crypto-utils.js";
 import { verifyProof } from "./proof-verification.js";
