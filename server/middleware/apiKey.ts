@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { validateApiKeyHeader } from "../services/apiKeys";
+import { validateApiKeyHeader } from "../services/apiKeys.js";
 
 declare global {
   namespace Express {

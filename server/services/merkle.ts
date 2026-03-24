@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { jcs } from "../plugins/canonicalize";
+import { jcs } from "../plugins/canonicalize.js";
 
 /**
  * Merkle Tree utilities for audit transparency

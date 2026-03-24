@@ -1,8 +1,8 @@
-import { db } from "../db";
-import { auditEvents } from "../../shared/schema";
+import { db } from "../db.js";
+import { auditEvents } from "../../shared/schema.js";
 import { desc, eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
-import { jcs } from "../plugins/canonicalize";
+import { jcs } from "../plugins/canonicalize.js";
 
 type AuditEventType = 'MINT' | 'USE' | 'TRANSFER' | 'STATUS_UPDATE';
 

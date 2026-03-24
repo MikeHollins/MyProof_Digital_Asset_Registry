@@ -1,7 +1,7 @@
-import { db } from "../db";
+import { db } from "../db.js";
 import { apiKeys, partners } from "../../shared/schema.js";
 import { eq } from "drizzle-orm";
-import { randomBytesHex, shortId, deriveSecretForHash, hashSecret, verifySecret } from "../utils/crypto";
+import { randomBytesHex, shortId, deriveSecretForHash, hashSecret, verifySecret } from "../utils/crypto.js";
 
 const ID_PREFIX = process.env.APIKEY_ID_PREFIX || "mpk_";
 const SECRET_BYTES = Number(process.env.APIKEY_SECRET_BYTES || 32);

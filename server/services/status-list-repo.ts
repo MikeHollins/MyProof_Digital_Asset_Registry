@@ -1,4 +1,4 @@
-import { db } from "../db";
+import { db } from "../db.js";
 import { statusLists } from "../../shared/schema.js";
 import { eq } from "drizzle-orm";
 import crypto from "node:crypto";

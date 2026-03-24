@@ -1,4 +1,4 @@
-import { db } from "../db";
+import { db } from "../db.js";
 import { jtiReplay } from "../../shared/schema.js";
 import { eq, lt } from "drizzle-orm";
 
