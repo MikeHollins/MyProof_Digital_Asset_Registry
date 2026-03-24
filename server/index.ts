@@ -13,7 +13,7 @@ import { dirname, join } from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const app = express();
+export const app = express();
 
 // Disable x-powered-by header for security
 app.disable('x-powered-by');
@@ -209,7 +209,12 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   );
 });
 
-(async () => {
+let isInitialized = false;
+let globalServer: any = null;
+
+export const initApp = async () => {
+  if (isInitialized) return { app, server: globalServer };
+
   // Load OpenAPI specification
   const openApiSpec = JSON.parse(
     readFileSync(join(__dirname, "openapi.json"), "utf8")
@@ -238,6 +243,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 
   // Register main routes first (initializes receipt keys)
   const server = await registerRoutes(app);
+  globalServer = server;
 
   // Register status list routes (database-backed W3C Bitstring Status Lists)
   const { registerStatusListRoutes } = await import("./routes-status-list");
@@ -287,31 +293,44 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
-    serveStatic(app);
+    // Vercel handles static asset serving natively
+    if (!process.env.VERCEL) {
+      serveStatic(app);
+    }
   }
 
-  const PORT = parseInt(process.env.PORT || "5000", 10);
-  server.listen(PORT, "0.0.0.0", () => {
-    log(`[express] serving on port ${PORT}`);
-  });
+  isInitialized = true;
+  return { app, server };
+};
 
-  // Background cleanup task: Remove expired JTI entries every 5 minutes
-  // This prevents unbounded growth of the jti_replay table
-  const { cleanupExpiredJti } = await import("./services/jti-repo");
+// Only start the server when NOT running on Vercel (local dev / Replit)
+if (!process.env.VERCEL) {
+  (async () => {
+    const { server } = await initApp();
 
-  // Run cleanup immediately on startup
-  cleanupExpiredJti().catch(err => {
-    console.error('[jti-cleanup] Initial cleanup failed:', err);
-  });
+    const PORT = parseInt(process.env.PORT || "5000", 10);
+    server.listen(PORT, "0.0.0.0", () => {
+      log(`[express] serving on port ${PORT}`);
+    });
 
-  // Schedule periodic cleanup
-  setInterval(async () => {
-    try {
-      await cleanupExpiredJti();
-    } catch (err) {
-      console.error('[jti-cleanup] Periodic cleanup failed:', err);
-    }
-  }, 5 * 60 * 1000); // Every 5 minutes
+    // Background cleanup task: Remove expired JTI entries every 5 minutes
+    // This prevents unbounded growth of the jti_replay table
+    const { cleanupExpiredJti } = await import("./services/jti-repo");
 
-  log('[jti-cleanup] Background JTI cleanup task started (runs every 5 minutes)');
-})();
+    // Run cleanup immediately on startup
+    cleanupExpiredJti().catch(err => {
+      console.error('[jti-cleanup] Initial cleanup failed:', err);
+    });
+
+    // Schedule periodic cleanup (only for long-running process, not serverless)
+    setInterval(async () => {
+      try {
+        await cleanupExpiredJti();
+      } catch (err) {
+        console.error('[jti-cleanup] Periodic cleanup failed:', err);
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+
+    log('[jti-cleanup] Background JTI cleanup task started (runs every 5 minutes)');
+  })();
+}
