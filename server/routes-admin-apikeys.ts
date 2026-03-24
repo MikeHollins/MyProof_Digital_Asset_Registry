@@ -1,11 +1,11 @@
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
-import { db } from "./db";
+import { db } from "./db.js";
 import { partners, apiKeys } from "@shared/schema";
-import { issueApiKey, revokeApiKey, rotateApiKey, type Scope } from "./services/apiKeys";
-import { requireScopes, apiKeyAuth } from "./middleware/apiKey";
+import { issueApiKey, revokeApiKey, rotateApiKey, type Scope } from "./services/apiKeys.js";
+import { requireScopes, apiKeyAuth } from "./middleware/apiKey.js";
 import { eq } from "drizzle-orm";
-import { badRequest, internalError, sendError } from "./utils/errors";
+import { badRequest, internalError, sendError } from "./utils/errors.js";
 
 const PartnerCreate = z.object({
   name: z.string().min(2),

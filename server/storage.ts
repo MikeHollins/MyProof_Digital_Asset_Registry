@@ -264,7 +264,7 @@ export class MemStorage implements IStorage {
 }
 
 // PostgreSQL Storage Implementation
-import { db } from "./db";
+import { db } from "./db.js";
 import { proofAssets as proofAssetsTable, auditEvents as auditEventsTable, statusLists as statusListsTable, mintFailures as mintFailuresTable, partners as partnersTable } from "@shared/schema";
 import { eq, desc, sql, and } from "drizzle-orm";
 
@@ -329,7 +329,7 @@ export class PostgresStorage implements IStorage {
   }
 
   async createAuditEvent(event: Partial<AuditEvent>): Promise<AuditEvent> {
-    const { computeAuditEventHash } = await import("./crypto-utils");
+    const { computeAuditEventHash } = await import("./crypto-utils.js");
 
     // Get the last event to link hashes
     const lastEvents = await db.select().from(auditEventsTable).orderBy(desc(auditEventsTable.timestamp)).limit(1);

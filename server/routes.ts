@@ -1,13 +1,13 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { storage } from "./storage.js";
 import { insertProofAssetSchema, updateStatusListSchema } from "@shared/schema";
 import { z } from "zod";
-import { generateProofCommitment, generateCID, normalizeUrl, validateDigestEncoding } from "./crypto-utils";
-import { verifyProof } from "./proof-verification";
-import { generateReceipt, generateTestKeypair } from "./receipt-service";
-import { notFound, conflict, internalError, badRequest, sendError } from "./utils/errors";
-import { apiKeyAuth, verifyBodySignature, requireScopes } from "./middleware/apiKey";
+import { generateProofCommitment, generateCID, normalizeUrl, validateDigestEncoding } from "./crypto-utils.js";
+import { verifyProof } from "./proof-verification.js";
+import { generateReceipt, generateTestKeypair } from "./receipt-service.js";
+import { notFound, conflict, internalError, badRequest, sendError } from "./utils/errors.js";
+import { apiKeyAuth, verifyBodySignature, requireScopes } from "./middleware/apiKey.js";
 
 // Generate signing keypair for receipts (in production, use KMS/HSM)
 let receiptSigningKey: JsonWebKey | null = null;
@@ -236,7 +236,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         console.log('[verify] Step 1: Verifying receipt signature (fast path)...');
-        const { verifyReceipt } = await import("./receipt-service");
+        const { verifyReceipt } = await import("./receipt-service.js");
 
         const receiptVerification = await verifyReceipt(proof.verifierProofRef, {
           publicKey: receiptPublicKey!,
@@ -312,7 +312,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Check W3C Status List with fail-closed security model
       console.log('[verify] Step 4: Checking W3C Status List...');
-      const { verifyProofStatus } = await import("./status-list-client");
+      const { verifyProofStatus } = await import("./status-list-client.js");
 
       let statusVerdict: string;
       let statusCheckReason: string | undefined;
@@ -354,8 +354,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (requireFresh) {
         console.log('[verify] ========== FRESH-PROOF MODE ==========');
         console.log('[verify] ⚙️  Fresh-proof mode requested - fetching proof bytes...');
-        const { fetchWithSRI, decodeB64u } = await import("./services/sri");
-        const { verifyFreshProof } = await import("./services/fresh-verifier");
+        const { fetchWithSRI, decodeB64u } = await import("./services/sri.js");
+        const { verifyFreshProof } = await import("./services/fresh-verifier.js");
 
         let proofBytes: Uint8Array | null = null;
 
@@ -646,7 +646,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Verify audit chain integrity
   app.get("/api/audit-events/verify-chain", async (req, res) => {
     try {
-      const { verifyAuditChainLink } = await import("./crypto-utils");
+      const { verifyAuditChainLink } = await import("./crypto-utils.js");
       const events = await storage.getAuditEvents();
 
       // Sort events in chronological order (oldest first)
@@ -724,7 +724,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Check the status using bitstring utilities
-      const { getCredentialStatus } = await import("./bitstring-utils");
+      const { getCredentialStatus } = await import("./bitstring-utils.js");
       const status = getCredentialStatus(
         statusList.bitstring,
         parseInt(proof.statusListIndex),
@@ -776,7 +776,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Decode base64 bitstring, apply operations using utilities, re-encode
-      const { applyOperations } = await import("./bitstring-utils");
+      const { applyOperations } = await import("./bitstring-utils.js");
       const bitstring = Buffer.from(statusList.bitstring, 'base64');
       applyOperations(bitstring, body.operations);
 

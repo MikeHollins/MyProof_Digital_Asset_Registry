@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
-import { pool } from "./db";
-import { apiKeyAuth, requireScopes } from "./middleware/apiKey";
+import { pool } from "./db.js";
+import { apiKeyAuth, requireScopes } from "./middleware/apiKey.js";
 
 export function registerAnalyticsRoutes(app: Express) {
   app.get('/api/admin/analytics/overview', apiKeyAuth, requireScopes(['admin:*']), async (req: Request, res: Response) => {

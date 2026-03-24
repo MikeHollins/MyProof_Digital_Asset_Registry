@@ -1,5 +1,5 @@
 import type { Express, Request, Response } from "express";
-import { apiKeyAuth, requireScopes } from "./middleware/apiKey";
+import { apiKeyAuth, requireScopes } from "./middleware/apiKey.js";
 
 export function registerAdminPing(app: Express) {
   // Never expose in production - strict guard

@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
-import { db, pool } from "./db";
-import { leafHash, merkleRoot, merkleProof } from "./services/merkle";
+import { db, pool } from "./db.js";
+import { leafHash, merkleRoot, merkleProof } from "./services/merkle.js";
 
 /**
  * Audit transparency export endpoints

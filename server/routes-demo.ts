@@ -1,9 +1,9 @@
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "crypto";
 import { SignJWT, importJWK } from "jose";
-import { storage } from "./storage";
-import { getReceiptSigningKey } from "./routes";
-import { ensureList, applyOps, getCompressedBitstring } from "./services/status-list-repo";
+import { storage } from "./storage.js";
+import { getReceiptSigningKey } from "./routes.js";
+import { ensureList, applyOps, getCompressedBitstring } from "./services/status-list-repo.js";
 
 /**
  * Demo Routes for PAR Registry

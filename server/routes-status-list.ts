@@ -1,5 +1,5 @@
 import type { Express, Request, Response } from "express";
-import { ensureList, getCompressedBitstring } from "./services/status-list-repo";
+import { ensureList, getCompressedBitstring } from "./services/status-list-repo.js";
 
 /**
  * Status List Routes

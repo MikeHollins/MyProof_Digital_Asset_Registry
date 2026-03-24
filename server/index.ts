@@ -1,7 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
-import { registerRoutes } from "./routes";
-import { registerDemoRoutes } from "./routes-demo";
-import { setupVite, serveStatic, log } from "./vite";
+import { registerRoutes } from "./routes.js";
+import { registerDemoRoutes } from "./routes-demo.js";
+import { setupVite, serveStatic, log } from "./vite.js";
 import helmet from "helmet";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import { createHash, randomBytes } from "crypto";
@@ -246,38 +246,38 @@ export const initApp = async () => {
   globalServer = server;
 
   // Register status list routes (database-backed W3C Bitstring Status Lists)
-  const { registerStatusListRoutes } = await import("./routes-status-list");
+  const { registerStatusListRoutes } = await import("./routes-status-list.js");
   registerStatusListRoutes(app);
 
   // Register demo routes (requires receipt keys to be initialized)
   await registerDemoRoutes(app);
 
   // Register admin API key management routes
-  const { registerAdminApiKeys } = await import("./routes-admin-apikeys");
+  const { registerAdminApiKeys } = await import("./routes-admin-apikeys.js");
   registerAdminApiKeys(app);
 
   // Register admin ping route (dev only)
-  const { registerAdminPing } = await import("./routes-admin-ping");
+  const { registerAdminPing } = await import("./routes-admin-ping.js");
   registerAdminPing(app);
 
   // Register audit export routes (Merkle transparency)
-  const { registerAuditExports } = await import("./routes-audit-exports");
+  const { registerAuditExports } = await import("./routes-audit-exports.js");
   registerAuditExports(app);
 
   // Register transfer routes (Phase 3: Provenance tracking)
-  const { registerTransferRoutes } = await import("./routes-transfer");
+  const { registerTransferRoutes } = await import("./routes-transfer.js");
   registerTransferRoutes(app);
 
   // Register usage routes (Phase 3: Usage receipts)
-  const { registerUsageRoutes } = await import("./routes-usage");
+  const { registerUsageRoutes } = await import("./routes-usage.js");
   registerUsageRoutes(app);
 
   // Register webhook routes (Partner event notifications)
-  const { registerWebhookRoutes } = await import("./routes-webhooks");
+  const { registerWebhookRoutes } = await import("./routes-webhooks.js");
   registerWebhookRoutes(app);
 
   // Register analytics routes (Admin and Partner analytics)
-  const { registerAnalyticsRoutes, registerPartnerRoutes } = await import("./routes-analytics");
+  const { registerAnalyticsRoutes, registerPartnerRoutes } = await import("./routes-analytics.js");
   registerAnalyticsRoutes(app);
   registerPartnerRoutes(app);
 
@@ -315,7 +315,7 @@ if (!process.env.VERCEL) {
 
     // Background cleanup task: Remove expired JTI entries every 5 minutes
     // This prevents unbounded growth of the jti_replay table
-    const { cleanupExpiredJti } = await import("./services/jti-repo");
+    const { cleanupExpiredJti } = await import("./services/jti-repo.js");
 
     // Run cleanup immediately on startup
     cleanupExpiredJti().catch(err => {

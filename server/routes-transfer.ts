@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
-import { db } from "./db";
+import { db } from "./db.js";
 import { proofAssets, assetTransfers } from "@shared/schema";
 import { eq } from "drizzle-orm";
 

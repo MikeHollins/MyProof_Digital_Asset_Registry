@@ -1,4 +1,4 @@
-import { setWithTTL, get as redisGet } from "./redis-client";
+import { setWithTTL, get as redisGet } from "./redis-client.js";
 import { gunzipSync } from "zlib";
 
 /**

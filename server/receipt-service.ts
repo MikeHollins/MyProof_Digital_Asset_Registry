@@ -1,7 +1,7 @@
 import { SignJWT, jwtVerify, createRemoteJWKSet, importJWK, type JWTPayload, decodeProtectedHeader } from "jose";
 import { createHash, randomBytes } from "crypto";
-import { setWithTTL, exists as redisExists } from "./redis-client";
-import { isReplayed } from "./services/jti-repo";
+import { setWithTTL, exists as redisExists } from "./redis-client.js";
+import { isReplayed } from "./services/jti-repo.js";
 
 // Algorithm allow-list for receipt signing/verification
 const ALLOWED_ALGORITHMS = ["ES256"] as const;

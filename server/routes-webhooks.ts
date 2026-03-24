@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { pool } from "./db.js";
 import { z } from "zod";
 import crypto from "node:crypto";
-import { badRequest, notFound, internalError } from "./utils/errors";
+import { badRequest, notFound, internalError } from "./utils/errors.js";
 
 const createWebhookSchema = z.object({
   partnerId: z.string().uuid(),
