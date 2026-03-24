@@ -4,7 +4,7 @@ import { validateApiKeyHeader } from "../services/apiKeys.js";
 declare global {
   namespace Express {
     interface Request {
-      auth?: { partnerId: string; keyId: string; scopes: string[] }
+      auth?: { partnerId: string; keyId: string; scopes: string[]; rawToken: string }
     }
   }
 }
@@ -38,7 +38,8 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
     req.auth = {
       partnerId: result.partnerId!,
       keyId: result.keyId!,
-      scopes: result.scopes!
+      scopes: result.scopes!,
+      rawToken: header  // Preserve for body signature verification (Bug 1 fix)
     };
 
     for (const k of Object.keys(req.headers)) {
@@ -88,7 +89,7 @@ export function verifyBodySignature(req: Request, res: Response, next: NextFunct
 
   const traceId = req.headers['x-trace-id'] as string;
   const timestamp = req.headers['x-signature-timestamp'] as string;
-  const apiKey = req.headers['x-api-key'] as string || '';
+  const apiKey = req.auth?.rawToken || req.headers['x-api-key'] as string || '';
 
   if (!traceId || !timestamp) {
     return res.status(403).json({

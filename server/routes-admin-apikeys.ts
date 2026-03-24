@@ -21,10 +21,16 @@ const IssueKey = z.object({
 });
 
 export function registerAdminApiKeys(app: Express) {
-  // Dev-only bootstrap endpoint to create first admin API key
+  // Production-safe bootstrap endpoint: only active when BOOTSTRAP_SECRET env var is set.
+  // After provisioning, remove BOOTSTRAP_SECRET to permanently disable this endpoint.
   app.post('/api/admin/bootstrap', async (req: Request, res: Response) => {
-    if (process.env.NODE_ENV === 'production') {
-      return sendError(req, res, 403, "Bootstrap disabled in production", "BOOTSTRAP_DISABLED");
+    const secret = process.env.BOOTSTRAP_SECRET;
+    if (!secret) {
+      return sendError(req, res, 403, "Bootstrap not available — BOOTSTRAP_SECRET not set", "BOOTSTRAP_DISABLED");
+    }
+    const provided = req.headers['x-bootstrap-secret'] as string;
+    if (!provided || provided !== secret) {
+      return sendError(req, res, 403, "Invalid bootstrap secret", "BOOTSTRAP_UNAUTHORIZED");
     }
 
     try {
