@@ -157,7 +157,7 @@ RECEIPT_VERIFIER_PUBLIC_JWK='{"kty":"EC","x":"...","y":"...","crv":"P-256","kid"
 - **Security Headers**:
   - Helmet CSP, HSTS (31536000s, includeSubDomains, preload)
   - X-Powered-By disabled
-  - Trust proxy enabled (Replit reverse proxy)
+  - Trust proxy enabled (Vercel reverse proxy)
   
 - **Body Size Limits**:
   - 64KB cap for JSON/URL-encoded bodies
