@@ -334,3 +334,6 @@ if (!process.env.VERCEL) {
     log('[jti-cleanup] Background JTI cleanup task started (runs every 5 minutes)');
   })();
 }
+
+// Re-export for Vercel cron handler (api/cron.ts imports from dist/index.js)
+export { cleanupExpiredJti } from "./services/jti-repo.js";

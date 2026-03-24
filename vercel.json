@@ -4,7 +4,7 @@
   "crons": [{ "path": "/api/cron", "schedule": "0 0 * * *" }],
   "functions": {
     "api/index.ts": {
-      "includeFiles": "server/openapi.json"
+      "includeFiles": "dist/**,server/openapi.json"
     }
   }
 }

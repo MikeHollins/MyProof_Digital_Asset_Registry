@@ -15,7 +15,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     try {
-        const { cleanupExpiredJti } = await import("../server/services/jti-repo.js");
+        const { cleanupExpiredJti } = await import("../dist/index.js");
         await cleanupExpiredJti();
 
         return res.status(200).json({
