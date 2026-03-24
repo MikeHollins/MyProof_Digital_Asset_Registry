@@ -225,3 +225,26 @@ All admin endpoints require authentication with `admin:*` scope:
 - `APIKEY_PEPPER` - Server-side pepper for API key derivation (required in production, 32+ random bytes)
 - `APIKEY_ID_PREFIX` - Visible key ID prefix for branding (default: `mpk_`)
 - `APIKEY_SECRET_BYTES` - Secret length in bytes for API keys (default: 32 = 256 bits)
+
+## Vercel Deployment
+
+| Setting | Value |
+|---------|-------|
+| **Project Name** | `par-registry` |
+| **Project ID** | `prj_iVz3YSAEHLzVznrW4joATz55sOMo` |
+| **Team / Org** | `team_wPs3klu5vzlCVcbwBL8nVEeY` (`mikehollins-projects`) |
+| **Custom Domain** | `par.myproof.ai` |
+| **Production URL** | `https://par.myproof.ai` |
+
+### Deployment
+Auto-deploys on push to `main` via GitHub integration. Manual deploy:
+```bash
+vercel deploy --prod --cwd /path/to/MyProof_Digital_Asset_Registry
+```
+
+### Production Environment Variables
+- `DATABASE_URL` — Neon PostgreSQL connection string
+- `REDIS_URL` — Redis for replay cache
+- `APIKEY_PEPPER` — Server-side pepper for API key derivation
+- `RECEIPT_VERIFIER_PUBLIC_JWK` / `RECEIPT_VERIFIER_PRIVATE_JWK` — ES256 keys for receipt signing
+- `BOOTSTRAP_SECRET` — **Ephemeral.** Only set during initial key provisioning, then removed.
