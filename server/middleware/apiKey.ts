@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import { createHash, createHmac } from "crypto";
 import { validateApiKeyHeader } from "../services/apiKeys.js";
 
 declare global {
@@ -118,7 +119,6 @@ export function verifyBodySignature(req: Request, res: Response, next: NextFunct
 
   // GAP 12: Use raw body bytes for hash — prevents re-serialization mismatch
   // Express raw body captured via verify callback in index.ts
-  const { createHash, createHmac } = require('node:crypto');
   const rawBody = (req as any).rawBody;
   const bodySource = rawBody
     ? (typeof rawBody === 'string' ? rawBody : rawBody.toString('utf-8'))
