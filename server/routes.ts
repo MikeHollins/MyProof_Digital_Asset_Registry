@@ -9,6 +9,31 @@ import { generateReceipt, generateTestKeypair } from "./receipt-service.js";
 import { notFound, conflict, internalError, badRequest, sendError } from "./utils/errors.js";
 import { apiKeyAuth, verifyBodySignature, requireScopes } from "./middleware/apiKey.js";
 
+// ═══════════════════════════════════════════════════════════════════════
+// PROOF ASSET LIFECYCLE — Three-Layer Model
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 1. RECORD PERMANENCE: Proof assets are permanent audit records (per white
+//    paper v3.2). They are never deleted or archived. The createdAt timestamp
+//    is immutable. This enables regulatory audit trails without storing PII.
+//
+// 2. REVOCATION: Controlled via W3C Bitstring Status List. Bit=1 means
+//    revoked. Checked on every re-verification via verifyProofStatus().
+//    Fail-closed: if status list is unreachable, verification is rejected.
+//    This is the ONLY hard gate on proof validity.
+//
+// 3. FRESHNESS: The PAR provides advisory freshness metadata (ttlSeconds,
+//    expiresAt, verificationTimestamp). Relying parties decide if a proof is
+//    "fresh enough" for their use case. A bar may require < 24h freshness,
+//    a bank < 90d. The PAR does NOT enforce freshness — that decision
+//    belongs to the relying party.
+//
+// 4. RECEIPT EXPIRY: The receipt JWT exp (1 year) is a cryptographic validity
+//    ceiling that bounds how long the signed receipt can be used for receipt-
+//    based re-verification. It is NOT a freshness indicator.
+//
+// ═══════════════════════════════════════════════════════════════════════
+
 // Generate signing keypair for receipts (in production, use KMS/HSM)
 let receiptSigningKey: JsonWebKey | null = null;
 let receiptPublicKey: JsonWebKey | null = null;
@@ -172,7 +197,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!proof) {
         return notFound(req, res, "Proof asset not found", "ASSET_NOT_FOUND");
       }
-      res.json(proof);
+      // Advisory freshness metadata — relying parties decide if proof is "fresh enough"
+      const now = Date.now();
+      const ageSeconds = Math.floor((now - new Date(proof.createdAt).getTime()) / 1000);
+      const isAdvisoryExpired = proof.expiresAt ? new Date(proof.expiresAt).getTime() < now : false;
+      res.json({
+        ...proof,
+        _freshness: {
+          ageSeconds,
+          isAdvisoryExpired,
+        },
+      });
     } catch (error: any) {
       return internalError(req, res, error.message);
     }
@@ -430,10 +465,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log('[verify] ========== VERIFICATION COMPLETE ==========');
       console.log('[verify] Returning response with status:', statusVerdict);
 
+      // Advisory freshness header — relying parties can route on this without parsing body
+      const now = Date.now();
+      const isAdvisoryExpired = proof.expiresAt ? new Date(proof.expiresAt).getTime() < now : false;
+      res.setHeader('X-Freshness-Advisory', isAdvisoryExpired ? 'stale' : 'fresh');
+
       res.json({
         success: true,
         verificationStatus: statusVerdict,
         verificationMethod: requireFresh ? "fresh_proof" : "receipt_based",
+        freshness: {
+          createdAt: proof.createdAt.toISOString(),
+          lastVerifiedAt: (updatedProof.verificationTimestamp || proof.createdAt).toISOString(),
+          ageSeconds: Math.floor((now - new Date(proof.createdAt).getTime()) / 1000),
+          advisoryTtlSeconds: proof.ttlSeconds || null,
+          advisoryExpiresAt: proof.expiresAt ? proof.expiresAt.toISOString() : null,
+          isAdvisoryExpired,
+        },
         verificationResult: {
           ok: true,
           receiptVerified: true,
@@ -542,7 +590,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             },
             audience: "myproof-registry",
             issuer: "did:example:verifier",
-            expiresInSeconds: 31536000, // 1 year
+            // Cryptographic validity ceiling (1 year). This bounds how long the
+            // signed receipt can be used for receipt-based re-verification. It is
+            // NOT a freshness indicator — relying parties use the advisory TTL
+            // metadata (ttlSeconds, expiresAt) for freshness decisions.
+            expiresInSeconds: 31536000,
           });
         } catch (error: any) {
           console.error("[receipt] Receipt generation failed:", error.message);
@@ -551,15 +603,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // partnerId already extracted above (idempotency check)
 
-      // Phase 4B: Per-policy configurable TTL
-      const TTL_POLICY: Record<string, number> = {
+      // Advisory freshness hints — NOT enforced by PAR. Relying parties decide
+      // if a proof is "fresh enough" for their use case. These values are stored
+      // on the asset as metadata for downstream consumption. See lifecycle docs
+      // at top of file.
+      const FRESHNESS_HINT: Record<string, number> = {
         'bar': 86400,        // 24 hours
         'dispensary': 604800, // 7 days
         'bank': 7776000,     // 90 days
         'default': 2592000,  // 30 days
       };
       const policyChannel = body.license?.channel || 'default';
-      const ttlSeconds = TTL_POLICY[policyChannel] || TTL_POLICY['default'];
+      const ttlSeconds = FRESHNESS_HINT[policyChannel] || FRESHNESS_HINT['default'];
       const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
       // GAP 9: Wrap insert in 23505-safe try-catch for concurrent insert race condition
