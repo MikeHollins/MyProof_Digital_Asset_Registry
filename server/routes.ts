@@ -615,7 +615,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
       const policyChannel = body.license?.channel || 'default';
       const ttlSeconds = FRESHNESS_HINT[policyChannel] || FRESHNESS_HINT['default'];
-      const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+      // expiresAt computed by Postgres: created_at + ttl_seconds (one clock, zero drift)
 
       // GAP 9: Wrap insert in 23505-safe try-catch for concurrent insert race condition
       let proof;
@@ -647,7 +647,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           verificationMetadata: verification.derivedFacts,
           verifierProofRef,
           ttlSeconds,
-          expiresAt,
         });
       } catch (insertErr: any) {
         // Postgres unique violation — concurrent insert won the race
