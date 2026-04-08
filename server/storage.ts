@@ -301,7 +301,15 @@ export class PostgresStorage implements IStorage {
   }
 
   async createProofAsset(proof: Partial<ProofAsset>): Promise<ProofAsset> {
-    const results = await db.insert(proofAssetsTable).values(proof as any).returning();
+    // Compute expiresAt from Postgres clock (created_at + ttl_seconds) — one clock, zero drift.
+    // Caller passes ttlSeconds but NOT expiresAt; Postgres owns both timestamps.
+    const { expiresAt: _, ...proofWithoutExpiry } = proof as any;
+    const results = await db.insert(proofAssetsTable).values({
+      ...proofWithoutExpiry,
+      expiresAt: proof.ttlSeconds
+        ? sql`now() + (${proof.ttlSeconds} * interval '1 second')`
+        : null,
+    } as any).returning();
     return results[0] as ProofAsset;
   }
 
