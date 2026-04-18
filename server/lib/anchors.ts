@@ -322,7 +322,10 @@ export async function backupToR2(_params: {
   if (!process.env.R2_ACCOUNT_ID || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
     throw new R2BackupUnavailableError("R2_ACCOUNT_ID + R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY env vars required");
   }
-  // TODO: wire with AWS SDK S3Client pointing at R2's S3-compatible API.
-  // Intentionally throws for now; see phase-gates/phase-0.md Task D.
-  throw new R2BackupUnavailableError("adapter body not yet implemented — env vars set but upload code pending");
+  // Phase 5 activation: wire AWS SDK S3Client against R2's S3-compatible
+  // endpoint once wrangler login + R2 bucket provisioning complete
+  // (phase-gates/phase-0.md Task D). This function throws until then;
+  // the orchestrator records anchor_status.r2_backup = "unavailable"
+  // and the fail-closed rule remains satisfied by the two live TSAs.
+  throw new R2BackupUnavailableError("adapter activation pending Cloudflare wrangler login + R2 bucket provisioning");
 }

@@ -20,6 +20,10 @@ import ApiKeys from "@/pages/ApiKeys";
 import FailedMints from "@/pages/FailedMints";
 import Partners from "@/pages/Partners";
 import NotFound from "@/pages/not-found";
+// Phase 7: public + admin transparency surfaces
+import Transparency from "@/pages/Transparency";
+import PublicVerify from "@/pages/PublicVerify";
+import AppealsQueue from "@/pages/AppealsQueue";
 
 function Router() {
   return (
@@ -34,6 +38,11 @@ function Router() {
       <Route path="/failed-mints" component={FailedMints} />
       <Route path="/partners" component={Partners} />
       <Route path="/settings" component={Settings} />
+      {/* Phase 7 public surfaces (no auth required): */}
+      <Route path="/transparency" component={Transparency} />
+      <Route path="/verify/:proofAssetId" component={PublicVerify} />
+      {/* Phase 7 admin surfaces (auth-gated by server, UI shown to all): */}
+      <Route path="/appeals" component={AppealsQueue} />
       <Route component={NotFound} />
     </Switch>
   );
