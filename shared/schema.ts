@@ -213,6 +213,39 @@ export const circuitVersions = pgTable("circuit_versions", {
   deprecatedIdx: index("ix_circuit_deprecated").on(table.deprecatedAt),
 }));
 
+// Epoch Roots — hourly signed Merkle tree heads over audit events.
+// Phase 2: each row represents one epoch's transparency-log root, signed by
+// an Ed25519 key (Phase 2 = FileSigner, Phase 5+ = AWS KMS), anchored to
+// multiple external tamper-evidence systems (Sigstore TSA, FreeTSA, Rekor v2,
+// Cloudflare R2 WORM backup). Old epochs never mutate. New epochs chain via
+// previous_epoch_hash to enable a consistency proof walk.
+export const epochRoots = pgTable("epoch_roots", {
+  epochId: varchar("epoch_id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  epochNumber: bigint("epoch_number", { mode: "number" }).notNull(), // Monotonic sequence, starts at 1
+  merkleRoot: text("merkle_root").notNull(), // Hex SHA-256 over all leaves using RFC 6962 domain tags
+  treeSize: integer("tree_size").notNull(), // Number of audit events included at this root
+  previousEpochHash: text("previous_epoch_hash"), // Hex SHA-256 of previous epoch_number+merkle_root+timestamp; null for epoch 1
+  signerFingerprint: text("signer_fingerprint").notNull(), // SHA-256 prefix of signing pubkey (PEM)
+  signerAlgorithm: text("signer_algorithm").notNull().default("Ed25519"), // Upgrade path: ML-DSA-65 co-sign
+  signatureEd25519: text("signature_ed25519").notNull(), // Base64url Ed25519 signature over canonical epoch bytes
+  signatureMlDsa: text("signature_ml_dsa"), // Phase 5+ PQ co-signature slot; null in Phase 2
+  rfc3161Tokens: jsonb("rfc_3161_tokens").notNull(), // Array of {tsa_url, token_b64, issued_at} from each TSA
+  rekorLogId: text("rekor_log_id"), // Rekor v2 log entry ID once anchored
+  rekorInclusionProof: jsonb("rekor_inclusion_proof"), // Fetched from Rekor post-submission
+  r2BackupKey: text("r2_backup_key"), // Cloudflare R2 object key once backed up; null until Cloudflare auth active
+  publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
+  // Anchors are optional individually but every epoch must have at least one.
+  // Publisher logs which anchors succeeded/failed in anchor_status for observability.
+  anchorStatus: jsonb("anchor_status").notNull(), // e.g. { sigstore_tsa: "ok", freetsa: "ok", rekor_v2: "ok", r2_backup: "unavailable" }
+}, (table) => ({
+  numberIdx: uniqueIndex("ux_epoch_number").on(table.epochNumber),
+  // NOTE: merkle_root is NOT unique — consecutive epochs with no new audit
+  // events legitimately share the empty-tree root hash. epoch_number is the
+  // authoritative unique identifier.
+  rootIdx: index("ix_epoch_root").on(table.merkleRoot),
+  publishedIdx: index("ix_epoch_published").on(table.publishedAt),
+}));
+
 // Zod Schemas for API validation
 export const proofFormatEnum = z.enum([
   'ZK_PROOF',
@@ -360,6 +393,26 @@ export const insertCircuitVersionSchema = createInsertSchema(circuitVersions, {
   createdAt: true,
 });
 
+// Epoch root zod — used by the hourly cron + transparency endpoints
+export const rfc3161TokenSchema = z.object({
+  tsa_url: z.string().url(),
+  token_b64: z.string().min(1),
+  issued_at: z.string(), // ISO 8601
+});
+
+export const insertEpochRootSchema = createInsertSchema(epochRoots, {
+  epochNumber: z.number().int().min(1),
+  merkleRoot: z.string().regex(/^[0-9a-f]{64}$/),
+  treeSize: z.number().int().min(0),
+  signerFingerprint: z.string().min(8).max(128),
+  signatureEd25519: z.string().min(1),
+  rfc3161Tokens: z.array(rfc3161TokenSchema),
+  anchorStatus: z.record(z.enum(["ok", "failed", "unavailable"])),
+}).omit({
+  epochId: true,
+  publishedAt: true,
+});
+
 // TypeScript types
 export type ProofAsset = typeof proofAssets.$inferSelect;
 export type InsertProofAsset = z.infer<typeof insertProofAssetSchema>;
@@ -383,6 +436,9 @@ export type TrustLevel = z.infer<typeof trustLevelEnum>;
 export type RuleType = z.infer<typeof ruleTypeEnum>;
 export type CircuitVersion = typeof circuitVersions.$inferSelect;
 export type InsertCircuitVersion = z.infer<typeof insertCircuitVersionSchema>;
+export type EpochRoot = typeof epochRoots.$inferSelect;
+export type InsertEpochRoot = z.infer<typeof insertEpochRootSchema>;
+export type Rfc3161Token = z.infer<typeof rfc3161TokenSchema>;
 
 // Additional interfaces for frontend
 export interface DashboardStats {

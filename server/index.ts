@@ -287,6 +287,14 @@ export const initApp = async () => {
   registerAnalyticsRoutes(app);
   registerPartnerRoutes(app);
 
+  // Register policies routes (Phase 1: dynamic policy governance with 24h delay-lock)
+  const { registerPolicyRoutes } = await import("./routes-policies.js");
+  registerPolicyRoutes(app);
+
+  // Register transparency routes + cron (Phase 2: multi-anchor audit ledger)
+  const { registerTransparencyRoutes } = await import("./routes-transparency.js");
+  registerTransparencyRoutes(app);
+
   // Error handling middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;

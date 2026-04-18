@@ -1,7 +1,10 @@
 {
   "version": 2,
   "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index.ts" }],
-  "crons": [{ "path": "/api/cron", "schedule": "0 0 * * *" }],
+  "crons": [
+    { "path": "/api/cron", "schedule": "0 0 * * *" },
+    { "path": "/api/cron/publish-epoch", "schedule": "5 * * * *" }
+  ],
   "functions": {
     "api/index.ts": {
       "includeFiles": "dist/**,server/openapi.json"
