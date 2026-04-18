@@ -1,10 +1,10 @@
 import crypto from "node:crypto";
 import argon2 from "argon2";
 
-const PEPPER = process.env.APIKEY_PEPPER || "dev-pepper-change-in-production";
-if (!PEPPER && process.env.NODE_ENV === "production") {
+if (process.env.NODE_ENV === "production" && !process.env.APIKEY_PEPPER) {
   throw new Error("APIKEY_PEPPER is required in production");
 }
+const PEPPER = process.env.APIKEY_PEPPER || "dev-pepper-change-in-production";
 
 export function randomBytesHex(n = 32): string {
   return crypto.randomBytes(n).toString("hex");
