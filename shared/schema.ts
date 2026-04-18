@@ -213,6 +213,56 @@ export const circuitVersions = pgTable("circuit_versions", {
   deprecatedIdx: index("ix_circuit_deprecated").on(table.deprecatedAt),
 }));
 
+// Verifications — per-merchant verification log.
+// Separate from audit_events because audit_events is append-only + hash-chained
+// (internal cryptographic audit) while verifications is the partner/merchant-
+// facing log used for dashboards, quota enforcement, and Art. 22 appeals.
+// Contains NO PII: partner_id + proof_asset_id + verdict + assurance_level +
+// timestamps only.
+export const verifications = pgTable("verifications", {
+  verificationId: varchar("verification_id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  partnerId: uuid("partner_id").references(() => partners.partnerId),
+  proofAssetId: varchar("proof_asset_id", { length: 36 }),
+  policyCid: text("policy_cid"),
+  verdict: varchar("verdict", { length: 16 }).notNull(), // "pass" | "fail"
+  rejectionCode: varchar("rejection_code", { length: 64 }), // e.g. TRUST_LEVEL_BELOW_POLICY_MINIMUM, POLICY_NOT_ACTIVE
+  assuranceLevel: varchar("assurance_level", { length: 32 }).notNull().default("maximum"),
+  internalTrustTier: varchar("internal_trust_tier", { length: 32 }), // Private — not surfaced to partner
+  requestId: text("request_id").notNull(),
+  latencyMs: integer("latency_ms"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  partnerIdx: index("ix_verifications_partner").on(table.partnerId),
+  verdictIdx: index("ix_verifications_verdict").on(table.verdict),
+  createdAtIdx: index("ix_verifications_created").on(table.createdAt),
+  requestIdx: uniqueIndex("ux_verifications_request").on(table.requestId),
+}));
+
+// Appeals — Art. 22 GDPR human-review channel (EDPB Statement 1/2025).
+// Every verification rejection must offer the user a path to request human
+// review. Free-text "reason" is limited + PII-scanned on submit; a positive
+// PII flag routes the appeal to a reviewer-only restricted queue.
+export const appeals = pgTable("appeals", {
+  appealId: varchar("appeal_id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  verificationId: varchar("verification_id", { length: 36 }), // May be null if user appeals without a session_id
+  sessionIdHint: text("session_id_hint"), // Short, non-PII session identifier
+  category: varchar("category", { length: 32 }).notNull(), // incorrect_rejection | technical_error | policy_dispute | other
+  freeText: text("free_text"), // <= 500 chars, optional
+  piiFlagged: boolean("pii_flagged").notNull().default(false),
+  status: varchar("status", { length: 16 }).notNull().default("open"), // open | in_review | resolved | rejected
+  assignedReviewer: text("assigned_reviewer"),
+  resolution: text("resolution"),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  slaDueAt: timestamp("sla_due_at", { withTimezone: true }).notNull(), // 30 days from createdAt per EDPB
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  statusIdx: index("ix_appeals_status").on(table.status),
+  slaIdx: index("ix_appeals_sla").on(table.slaDueAt),
+  piiFlaggedIdx: index("ix_appeals_pii_flagged").on(table.piiFlagged),
+  categoryIdx: index("ix_appeals_category").on(table.category),
+}));
+
 // Epoch Roots — hourly signed Merkle tree heads over audit events.
 // Phase 2: each row represents one epoch's transparency-log root, signed by
 // an Ed25519 key (Phase 2 = FileSigner, Phase 5+ = AWS KMS), anchored to
@@ -394,6 +444,41 @@ export const insertCircuitVersionSchema = createInsertSchema(circuitVersions, {
   createdAt: true,
 });
 
+// Verifications + Appeals zod schemas
+export const verdictEnum = z.enum(["pass", "fail"]);
+
+export const insertVerificationSchema = createInsertSchema(verifications, {
+  partnerId: z.string().uuid().optional(),
+  proofAssetId: z.string().uuid().optional(),
+  policyCid: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+  verdict: verdictEnum,
+  rejectionCode: z.string().max(64).optional(),
+  assuranceLevel: z.string().max(32),
+  internalTrustTier: z.enum([
+    "CRYPTO_STRONG",
+    "PASSIVE_AUTH_HASH_ONLY",
+    "AUTH_SIGNALS_DL",
+    "AUTH_SIGNALS",
+  ]).optional(),
+  requestId: z.string().min(10).max(200),
+  latencyMs: z.number().int().min(0).optional(),
+}).omit({ verificationId: true, createdAt: true });
+
+export const appealCategoryEnum = z.enum([
+  "incorrect_rejection",
+  "technical_error",
+  "policy_dispute",
+  "other",
+]);
+
+// Inbound API payload for POST /api/appeal — structured form, not free dump.
+export const submitAppealSchema = z.object({
+  verification_id: z.string().uuid().optional(),
+  session_id_hint: z.string().max(128).optional(),
+  category: appealCategoryEnum,
+  free_text: z.string().max(500).optional(),
+});
+
 // Epoch root zod — used by the hourly cron + transparency endpoints
 export const rfc3161TokenSchema = z.object({
   tsa_url: z.string().url(),
@@ -441,6 +526,12 @@ export type InsertCircuitVersion = z.infer<typeof insertCircuitVersionSchema>;
 export type EpochRoot = typeof epochRoots.$inferSelect;
 export type InsertEpochRoot = z.infer<typeof insertEpochRootSchema>;
 export type Rfc3161Token = z.infer<typeof rfc3161TokenSchema>;
+export type Verification = typeof verifications.$inferSelect;
+export type InsertVerification = z.infer<typeof insertVerificationSchema>;
+export type Appeal = typeof appeals.$inferSelect;
+export type SubmitAppealInput = z.infer<typeof submitAppealSchema>;
+export type AppealCategory = z.infer<typeof appealCategoryEnum>;
+export type Verdict = z.infer<typeof verdictEnum>;
 
 // Additional interfaces for frontend
 export interface DashboardStats {

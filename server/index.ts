@@ -295,6 +295,10 @@ export const initApp = async () => {
   const { registerTransparencyRoutes } = await import("./routes-transparency.js");
   registerTransparencyRoutes(app);
 
+  // Register appeals routes (Phase 3: Art. 22 EDPB Statement 1/2025 human review)
+  const { registerAppealRoutes } = await import("./routes-appeals.js");
+  registerAppealRoutes(app);
+
   // Error handling middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
