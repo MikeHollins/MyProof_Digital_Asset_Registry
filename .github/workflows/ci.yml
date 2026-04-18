@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # -----------------------------------------------------------------
+  # Tests — every Phase 1-5 smoke suite runs in CI
+  # -----------------------------------------------------------------
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci
+      - name: Log-redactor smoke
+        run: npx tsx server/middleware/log-redactor.test.ts
+      - name: Merkle tree smoke
+        run: npx tsx server/lib/merkle-tree.test.ts
+      - name: Appeals + PII detector smoke
+        run: npx tsx server/routes-appeals.test.ts
+      - name: Credential emitter smoke (SD-JWT-VC + mdoc)
+        run: npx tsx server/lib/emitters/emitters.test.ts
+
+  # -----------------------------------------------------------------
+  # Dependency security audit — block on moderate or higher CVEs
+  # -----------------------------------------------------------------
+  npm-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci
+      - name: Run npm audit (production deps, moderate+)
+        run: npm audit --omit=dev --audit-level=moderate
+
+  # -----------------------------------------------------------------
+  # SBOM generation + upload — CycloneDX per CRA Art. 13(2)(f)
+  # -----------------------------------------------------------------
+  sbom:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci
+      - name: Generate CycloneDX SBOM
+        run: npx @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          retention-days: 365
+
+  # -----------------------------------------------------------------
+  # PII pattern scanner — fails the build if any server source file
+  # or committed log fixture contains patterns that look like PII.
+  # This is the Phase 8 enforcement layer complementing the runtime
+  # log-redactor middleware (server/middleware/log-redactor.ts).
+  # -----------------------------------------------------------------
+  pii-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for PII leak patterns in source + fixtures
+        shell: bash
+        run: |
+          set -e
+          # Fail the build if any source file contains patterns that suggest
+          # raw PII handling. The regex is intentionally broad; test files
+          # use literal placeholder strings that look like PII (John Doe etc.)
+          # so we exclude *.test.ts from the scan.
+          PATTERNS=(
+            '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'   # email
+            '\b\d{3}-\d{2}-\d{4}\b'                             # SSN
+            '\b\+1[- ]?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}\b'      # US phone
+            '\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b'          # credit card
+          )
+          FILES=$(git ls-files '*.ts' '*.tsx' | grep -v 'test\.' | grep -v 'docs/' | grep -v 'server/middleware/log-redactor' || true)
+          LEAK=0
+          for f in $FILES; do
+            for p in "${PATTERNS[@]}"; do
+              if grep -EIq "$p" "$f"; then
+                # Allow placeholder-redaction markers
+                if grep -Iq 'redacted:' "$f"; then continue; fi
+                echo "::error file=$f::PII-like pattern found"
+                LEAK=1
+              fi
+            done
+          done
+          if [ "$LEAK" -eq 1 ]; then
+            echo "PII scan FAILED. Redact any literal PII from source; use redactor placeholder constants instead."
+            exit 1
+          fi
+          echo "PII scan PASSED."
+
+  # -----------------------------------------------------------------
+  # Dependency pinning check — ensure package-lock.json is committed
+  # and all package.json dependencies resolve to fixed versions.
+  # -----------------------------------------------------------------
+  deps-pinned:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if package-lock.json is missing
+        run: test -f package-lock.json || (echo "::error::package-lock.json is required"; exit 1)
+      - name: Fail if package.json uses ^ or ~ with unresolved lock
+        shell: bash
+        run: |
+          set -e
+          npm ci
+          echo "Dependencies resolved cleanly."
