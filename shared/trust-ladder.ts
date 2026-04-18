@@ -109,7 +109,13 @@ export interface TrustDerivationInput {
 }
 
 export function deriveTrustLevel(input: TrustDerivationInput): TrustLevel {
-  // DL path: no passport NFC. Until mDL ships, DL is always AUTH_SIGNALS_DL.
+  // DL path: no passport NFC. Optical-DL (PDF417 only) is always AUTH_SIGNALS_DL.
+  //
+  // FUTURE-PROOF: if a future DL flow ships issuer-signed NFC evidence
+  // (e.g. mDL via ISO 18013-5 even while doc_type remains DRIVERS_LICENSE),
+  // this branch MUST be revisited. Adding NFC fields for a DRIVERS_LICENSE
+  // doc_type without updating this derivation would silently drop real
+  // trust signals on the floor (§7 silent downgrade). See agentsoul.md §7.
   if (input.docType === "DRIVERS_LICENSE") {
     return "AUTH_SIGNALS_DL";
   }

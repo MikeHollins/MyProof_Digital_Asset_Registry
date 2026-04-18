@@ -187,6 +187,7 @@ export const policies = pgTable("policies", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   cidIdx: uniqueIndex("ux_policy_cid").on(table.policyCid),
+  nameVersionIdx: uniqueIndex("ux_policy_name_version").on(table.name, table.version),
   nameIdx: index("ix_policy_name").on(table.name),
   jurisdictionIdx: index("ix_policy_jurisdiction").on(table.jurisdiction),
   effectiveIdx: index("ix_policy_effective").on(table.effectiveAt),

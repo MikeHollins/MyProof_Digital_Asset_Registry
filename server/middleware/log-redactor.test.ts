@@ -246,6 +246,77 @@ assertEq("preserves booleans", redactForLog(true), true);
 }
 
 // ----------------------------------------------------------------------------
+// NFKC normalization — fullwidth + ligature bypass defense
+// ----------------------------------------------------------------------------
+assertEq(
+  "fullwidth family_name redacted (NFKC)",
+  redactForLog({ "\uFF46\uFF41\uFF4D\uFF49\uFF4C\uFF59_\uFF4E\uFF41\uFF4D\uFF45": "Doe" }),
+  { "\uFF46\uFF41\uFF4D\uFF49\uFF4C\uFF59_\uFF4E\uFF41\uFF4D\uFF45": "<redacted:PII_NAME>" }
+);
+assertEq(
+  "ligature ﬁrst_name redacted (NFKC)",
+  redactForLog({ "\uFB01rst_name": "John" }),
+  { "\uFB01rst_name": "<redacted:PII_NAME>" }
+);
+
+// ----------------------------------------------------------------------------
+// Error object redaction
+// ----------------------------------------------------------------------------
+{
+  const err = new Error("database failed for user John Doe with email leak@test.com");
+  const redacted = redactForLog(err) as { message: string; stack?: string };
+  assertContains("redacts email from Error.message", redacted.message, "<redacted:PII_EMAIL>");
+  assertNotContains("Error.message does not leak email", redacted.message, "leak@test.com");
+}
+
+// ----------------------------------------------------------------------------
+// __proto__ / constructor / prototype ignored (defense-in-depth)
+// Use JSON.parse to create an own __proto__ property — mimics exactly how an
+// attacker would smuggle the key in via an HTTP JSON body.
+// ----------------------------------------------------------------------------
+{
+  const smuggled = JSON.parse('{"session_id":"ok","__proto__":{"polluted":true},"constructor":"bad"}');
+  const redacted = redactForLog(smuggled) as Record<string, unknown>;
+  const hasOwnProto = Object.prototype.hasOwnProperty.call(redacted, "__proto__");
+  const hasOwnCtor = Object.prototype.hasOwnProperty.call(redacted, "constructor");
+  if (hasOwnProto || hasOwnCtor) {
+    failures++;
+    console.error(`FAIL special JS keys should be stripped (proto=${hasOwnProto} ctor=${hasOwnCtor})`);
+  } else {
+    console.log("PASS __proto__ / constructor keys stripped");
+  }
+}
+
+// ----------------------------------------------------------------------------
+// New PII categories — financial + country-specific + biometric
+// ----------------------------------------------------------------------------
+assertEq(
+  "redacts IBAN",
+  redactForLog({ iban: "NL91ABNA0417164300" }),
+  { iban: "<redacted:PII_FINANCIAL>" }
+);
+assertEq(
+  "redacts BSN (Netherlands)",
+  redactForLog({ bsn: "123456789" }),
+  { bsn: "<redacted:PII_NATIONAL_ID>" }
+);
+assertEq(
+  "redacts NINO (UK)",
+  redactForLog({ nino: "AB123456C" }),
+  { nino: "<redacted:PII_NATIONAL_ID>" }
+);
+assertEq(
+  "redacts Aadhaar",
+  redactForLog({ aadhaar: "1234-5678-9012" }),
+  { aadhaar: "<redacted:PII_NATIONAL_ID>" }
+);
+assertEq(
+  "redacts fingerprint",
+  redactForLog({ fingerprint: "template_data" }),
+  { fingerprint: "<redacted:PII_BIOMETRIC>" }
+);
+
+// ----------------------------------------------------------------------------
 // Coverage: every rule in REDACTION_RULES has at least one test above
 // ----------------------------------------------------------------------------
 const RULES_TESTED = REDACTION_RULES.length;

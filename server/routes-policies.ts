@@ -1,16 +1,48 @@
 import type { Express, Request, Response } from "express";
-import { createHash } from "crypto";
+import { createHash, createPublicKey, verify as cryptoVerify } from "crypto";
 import { canonicalize } from "json-canonicalize";
 import { and, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import { db } from "./db.js";
 import { policies, insertPolicySchema, type Policy, type PolicyRule, type TrustLevel } from "../shared/schema.js";
 import { apiKeyAuth, requireScopes } from "./middleware/apiKey.js";
 import { badRequest, internalError, sendError } from "./utils/errors.js";
+import { safeError } from "./middleware/log-redactor.js";
 
 // 24-hour delay-lock for policy activation.
 // Per §governance: after an admin signs a policy, it does not take effect
 // until 24h later. Regulators and merchants can see pending changes in advance.
 const DELAY_LOCK_MS = 24 * 60 * 60 * 1000;
+
+// Admin signing key — Ed25519 public key in SPKI PEM format.
+// Stored in env var POLICY_ADMIN_PUBKEY_PEM. Phase 1 uses a locally-held
+// Ed25519 keypair; Phase 2 upgrades to AWS KMS-backed signing with an
+// identical verify path (KMS keys export an SPKI PEM pubkey).
+// Fail-closed if the env var is missing — /sign endpoint returns 503.
+function getAdminPubkey(): { key: ReturnType<typeof createPublicKey>; fingerprint: string } | null {
+  const pem = process.env.POLICY_ADMIN_PUBKEY_PEM;
+  if (!pem) return null;
+  try {
+    const key = createPublicKey(pem);
+    const fingerprint = createHash("sha256").update(pem).digest("hex").substring(0, 16);
+    return { key, fingerprint };
+  } catch {
+    return null;
+  }
+}
+
+// Safe redact of a db/runtime error before it reaches the client.
+// Per security review: e.message may leak SQL, table/column names, or host info.
+function sanitizeError(e: unknown, fallback: string): string {
+  if (e instanceof Error) {
+    const msg = e.message ?? "";
+    // Strip anything that looks like a SQL hint, path, or db identifier.
+    if (/(\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bFROM\b|relation\s|\bcolumn\b|neondb|postgres|localhost|:5432|\.sql\b)/i.test(msg)) {
+      return fallback;
+    }
+    return msg.length > 200 ? msg.substring(0, 200) : msg;
+  }
+  return fallback;
+}
 
 // Compute a canonical content address for a policy.
 // Format: sha256:<64-char-hex>
@@ -69,16 +101,22 @@ export function registerPolicyRoutes(app: Express): void {
           created_at: policy.createdAt,
         },
       });
-    } catch (e: any) {
-      return internalError(req, res, e.message);
+    } catch (e) {
+      safeError("[POLICY_GET_BY_CID_ERROR]", { trace_id: (req as any).traceId, err: e instanceof Error ? e.message : String(e) });
+      return internalError(req, res, sanitizeError(e, "Policy lookup failed"));
     }
   });
 
   // =========================================================================
-  // PUBLIC: GET all active policies (paginated)
+  // PUBLIC: GET active policies (paginated, default limit 100, max 500)
   // =========================================================================
-  app.get("/api/policies", async (_req: Request, res: Response) => {
+  app.get("/api/policies", async (req: Request, res: Response) => {
     try {
+      const limitRaw = Number.parseInt(String((req.query as any)?.limit ?? "100"), 10);
+      const offsetRaw = Number.parseInt(String((req.query as any)?.offset ?? "0"), 10);
+      const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 100;
+      const offset = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
+
       const now = new Date();
       const active = await db
         .select()
@@ -87,11 +125,15 @@ export function registerPolicyRoutes(app: Express): void {
           lte(policies.effectiveAt, now),
           or(isNull(policies.deprecatedAt), sql`${policies.deprecatedAt} > NOW()`),
         ))
-        .orderBy(desc(policies.effectiveAt));
+        .orderBy(desc(policies.effectiveAt))
+        .limit(limit)
+        .offset(offset);
 
       return res.json({
         ok: true,
         count: active.length,
+        limit,
+        offset,
         policies: active.map((p) => ({
           policy_cid: p.policyCid,
           name: p.name,
@@ -103,8 +145,9 @@ export function registerPolicyRoutes(app: Express): void {
           effective_at: p.effectiveAt,
         })),
       });
-    } catch (e: any) {
-      return internalError(req, res, e.message);
+    } catch (e) {
+      safeError("[POLICY_LIST_ERROR]", { trace_id: (req as any).traceId, err: e instanceof Error ? e.message : String(e) });
+      return internalError(req, res, sanitizeError(e, "Policy list failed"));
     }
   });
 
@@ -159,28 +202,73 @@ export function registerPolicyRoutes(app: Express): void {
           message: "Policy created but not yet effective. Call POST /api/admin/policies/:policyId/sign to activate after 24h delay-lock.",
         },
       });
-    } catch (e: any) {
-      return badRequest(req, res, e.message, "POLICY_CREATE_FAILED");
+    } catch (e) {
+      safeError("[POLICY_CREATE_ERROR]", { trace_id: (req as any).traceId, err: e instanceof Error ? e.message : String(e) });
+      return badRequest(req, res, sanitizeError(e, "Policy create failed"), "POLICY_CREATE_FAILED");
     }
   });
 
   // =========================================================================
   // ADMIN: sign a policy to initiate the 24h delay-lock
+  //
+  // Body: { signature: "<base64url Ed25519 signature over the policy_cid bytes>" }
+  // Verification: the signature must verify against the admin Ed25519 pubkey
+  // published in env var POLICY_ADMIN_PUBKEY_PEM. If the env var is missing
+  // or the signature fails to verify, the endpoint fails closed.
+  //
+  // Phase 2 upgrade: POLICY_ADMIN_PUBKEY_PEM will be the SPKI PEM of an AWS
+  // KMS-backed Ed25519 key. Verification path is identical; only the signing
+  // side moves off the admin laptop and into KMS.
   // =========================================================================
   app.post("/api/admin/policies/:policyId/sign", apiKeyAuth, requireScopes(["admin:*"]), async (req: Request, res: Response) => {
     try {
-      const { signature } = req.body ?? {};
-      if (typeof signature !== "string" || signature.length < 32) {
-        return badRequest(req, res, "signature required (>= 32 chars, hex or base64)", "SIGNATURE_REQUIRED");
+      const pubkey = getAdminPubkey();
+      if (!pubkey) {
+        // Fail-closed: no admin pubkey configured => no policy can be signed.
+        return sendError(req, res, 503, "Admin signing key not configured (POLICY_ADMIN_PUBKEY_PEM missing or malformed)", "ADMIN_PUBKEY_UNAVAILABLE");
+      }
+
+      const body = req.body as { signature?: unknown } | undefined;
+      const signatureInput = body?.signature;
+      if (typeof signatureInput !== "string" || signatureInput.length < 32) {
+        return badRequest(req, res, "signature required (base64url Ed25519 over policy_cid bytes)", "SIGNATURE_REQUIRED");
+      }
+
+      // Fetch the policy and check it is not already signed.
+      const target = await db.select().from(policies).where(eq(policies.policyId, req.params.policyId)).limit(1);
+      if (target.length === 0) {
+        return sendError(req, res, 404, "Policy not found", "POLICY_NOT_FOUND");
+      }
+      if (target[0].approvalSignature) {
+        return sendError(req, res, 409, "Policy already signed — issue a new version to update rules", "POLICY_ALREADY_SIGNED");
+      }
+
+      // Decode base64url signature.
+      let signatureBytes: Buffer;
+      try {
+        const normalized = signatureInput.replace(/-/g, "+").replace(/_/g, "/");
+        const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+        signatureBytes = Buffer.from(padded, "base64");
+      } catch {
+        return badRequest(req, res, "signature must be base64url-encoded", "SIGNATURE_DECODE_FAILED");
+      }
+      if (signatureBytes.length !== 64) {
+        return badRequest(req, res, `Ed25519 signature must be 64 bytes; got ${signatureBytes.length}`, "SIGNATURE_LENGTH_INVALID");
+      }
+
+      // Ed25519 verify over the policy_cid ASCII bytes.
+      const messageBytes = Buffer.from(target[0].policyCid, "utf8");
+      const ok = cryptoVerify(null, messageBytes, pubkey.key, signatureBytes);
+      if (!ok) {
+        return sendError(req, res, 403, "Signature does not verify against admin pubkey", "SIGNATURE_INVALID");
       }
 
       const now = new Date();
       const effectiveAt = new Date(now.getTime() + DELAY_LOCK_MS);
-
       const updated = await db
         .update(policies)
         .set({
-          approvalSignature: signature,
+          approvalSignature: signatureInput,
           approvalSignedAt: now,
           effectiveAt,
           updatedAt: now,
@@ -192,7 +280,8 @@ export function registerPolicyRoutes(app: Express): void {
         .returning();
 
       if (updated.length === 0) {
-        return sendError(req, res, 404, "Policy not found or already signed", "POLICY_ALREADY_SIGNED_OR_MISSING");
+        // Race: someone else signed in between our check and update.
+        return sendError(req, res, 409, "Policy signed by a concurrent request", "POLICY_CONCURRENT_SIGN");
       }
 
       return res.json({
@@ -201,9 +290,11 @@ export function registerPolicyRoutes(app: Express): void {
         policy_cid: updated[0].policyCid,
         effective_at: updated[0].effectiveAt,
         delay_lock_hours: 24,
+        admin_pubkey_fingerprint: pubkey.fingerprint,
       });
-    } catch (e: any) {
-      return badRequest(req, res, e.message, "POLICY_SIGN_FAILED");
+    } catch (e) {
+      safeError("[POLICY_SIGN_ERROR]", { trace_id: (req as any).traceId, err: e instanceof Error ? e.message : String(e) });
+      return badRequest(req, res, sanitizeError(e, "Policy sign failed"), "POLICY_SIGN_FAILED");
     }
   });
 
@@ -229,15 +320,16 @@ export function registerPolicyRoutes(app: Express): void {
         policy_cid: updated[0].policyCid,
         deprecated_at: updated[0].deprecatedAt,
       });
-    } catch (e: any) {
-      return badRequest(req, res, e.message, "POLICY_DEPRECATE_FAILED");
+    } catch (e) {
+      safeError("[POLICY_DEPRECATE_ERROR]", { trace_id: (req as any).traceId, err: e instanceof Error ? e.message : String(e) });
+      return badRequest(req, res, sanitizeError(e, "Policy deprecate failed"), "POLICY_DEPRECATE_FAILED");
     }
   });
 
   // =========================================================================
   // ADMIN: list all policies including pending and deprecated
   // =========================================================================
-  app.get("/api/admin/policies", apiKeyAuth, requireScopes(["admin:*"]), async (_req: Request, res: Response) => {
+  app.get("/api/admin/policies", apiKeyAuth, requireScopes(["admin:*"]), async (req: Request, res: Response) => {
     try {
       const all = await db.select().from(policies).orderBy(desc(policies.createdAt));
       return res.json({
@@ -248,8 +340,9 @@ export function registerPolicyRoutes(app: Express): void {
           active: isPolicyActive(p),
         })),
       });
-    } catch (e: any) {
-      return internalError(req, res, e.message);
+    } catch (e) {
+      safeError("[POLICY_ADMIN_LIST_ERROR]", { trace_id: (req as any).traceId, err: e instanceof Error ? e.message : String(e) });
+      return internalError(req, res, sanitizeError(e, "Policy admin list failed"));
     }
   });
 }

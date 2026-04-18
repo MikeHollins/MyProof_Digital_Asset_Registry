@@ -114,13 +114,53 @@ export const REDACTION_RULES: readonly RedactionRule[] = [
     placeholder: "<redacted:PII_IP>",
     description: "IP address (identifier when tied to a user)",
   },
+  {
+    keys: [
+      "tin", "tax_id", "taxId", "taxpayer_id", "taxpayerId",
+      "iban", "bic", "swift",
+      "bank_account", "bankAccount",
+      "credit_card", "creditCard", "card_number", "cardNumber", "cvv", "cvc",
+    ],
+    placeholder: "<redacted:PII_FINANCIAL>",
+    description: "Tax / banking / payment identifiers",
+  },
+  {
+    keys: [
+      "bsn",                                      // Netherlands
+      "ppsn",                                     // Ireland
+      "pesel",                                    // Poland
+      "cpf", "cnpj",                              // Brazil
+      "aadhaar", "aadhar",                        // India
+      "curp", "rfc",                              // Mexico
+      "nino", "national_insurance_number", "nationalInsuranceNumber",
+      "voter_id", "voterId", "voter_registration", "voterRegistration",
+      "health_card", "healthCard", "ohip", "medicare", "medicaid",
+      "nhs_number", "nhsNumber",
+      "drivers_permit", "driversPermit",
+    ],
+    placeholder: "<redacted:PII_NATIONAL_ID>",
+    description: "Country-specific national / personal / health identifiers",
+  },
+  {
+    keys: [
+      "fingerprint", "iris_scan", "irisScan", "retina_scan", "retinaScan",
+    ],
+    placeholder: "<redacted:PII_BIOMETRIC>",
+    description: "Biometric identifiers (beyond face/portrait bucket)",
+  },
 ];
 
-// Case-insensitive key lookup.
+// Case- AND unicode-insensitive key lookup: NFKC composes ligatures (ﬁ → fi,
+// ﬀ → ff), fullwidth chars (ｆａｍｉｌｙ → family), then lowercased. Defeats
+// unicode homoglyph bypasses identified in Phase 1 security review.
+function normalizeKey(raw: string): string {
+  return raw.normalize("NFKC").toLowerCase();
+}
+
 const KEY_LOOKUP: Map<string, RedactionRule> = new Map();
 for (const rule of REDACTION_RULES) {
   for (const key of rule.keys) {
-    KEY_LOOKUP.set(key.toLowerCase(), rule);
+    KEY_LOOKUP.set(normalizeKey(key), rule);
   }
 }
 
@@ -134,7 +174,7 @@ const STANDALONE_VALUE_PATTERNS: readonly { pattern: RegExp; placeholder: Placeh
 
 // Redacts a single value if it matches any value-pattern rules for the given key.
 function redactValue(key: string, value: unknown): unknown {
-  const rule = KEY_LOOKUP.get(key.toLowerCase());
+  const rule = KEY_LOOKUP.get(normalizeKey(key));
   if (rule) {
     // Key-based redaction: always redact unless value is nullish (preserve shape).
     if (value === null || value === undefined) return value;
@@ -162,18 +202,29 @@ function redactStandalonePatterns(text: string): string {
   return result;
 }
 
-// Deep-redact an object/array. Non-mutating.
+// Deep-redact an object/array/Error. Non-mutating.
 export function redactForLog(input: unknown, depth: number = 0): unknown {
   if (depth > 8) return "<redacted:MAX_DEPTH>"; // Guard against cycles/bombs
   if (input === null || input === undefined) return input;
   if (typeof input === "string") return redactStandalonePatterns(input);
   if (typeof input !== "object") return input;
+  // Error instances have non-enumerable .message and .stack — Object.entries misses them.
+  // Redact the fields explicitly so thrown PII-bearing errors are sanitized.
+  if (input instanceof Error) {
+    return {
+      name: input.name,
+      message: redactStandalonePatterns(input.message ?? ""),
+      stack: input.stack ? redactStandalonePatterns(input.stack) : undefined,
+    };
+  }
   if (Array.isArray(input)) {
     return input.map((v) => redactForLog(v, depth + 1));
   }
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-    const rule = KEY_LOOKUP.get(key.toLowerCase());
+    // Defense-in-depth: refuse to walk special JS keys regardless of PII.
+    if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
+    const rule = KEY_LOOKUP.get(normalizeKey(key));
     if (rule) {
       out[key] = redactValue(key, value);
     } else if (typeof value === "object" && value !== null) {

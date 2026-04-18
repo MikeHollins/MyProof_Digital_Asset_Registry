@@ -211,13 +211,21 @@ export function assertClaimsAllowlisted(claims: Record<string, unknown>): void {
 
 // Strips forbidden/unknown claims, returns a new object with only allowlisted keys.
 // Use for tolerant wrappers (e.g., passthrough from upstream credentials with extra claims).
-// Logs each stripped claim to the caller-supplied log function for audit.
+// The caller MUST pass a logger so stripped claims are always audit-logged.
+// Silently dropping stripped claims would mask upstream schema drift.
 export function stripToAllowlist(
   claims: Record<string, unknown>,
-  log: (msg: string) => void = () => {}
+  log: (msg: string) => void,
 ): Record<string, unknown> {
+  if (typeof log !== "function") {
+    throw new Error("stripToAllowlist requires an audit logger — silent drop is forbidden");
+  }
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(claims)) {
+    if (key === "__proto__" || key === "constructor" || key === "prototype") {
+      log(`[claims-allowlist] dropped_special_key=${key}`);
+      continue;
+    }
     if (PERMITTED_CLAIM_NAMES.has(key) && !FORBIDDEN_CLAIM_NAMES.has(key)) {
       out[key] = value;
     } else {
