@@ -16,10 +16,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRoute, Link } from "wouter";
 import { motion } from "framer-motion";
-import { ShieldCheck, Globe, Hash, Calendar, FileText, BadgeCheck, ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { ShieldCheck, Globe, Hash, FileText, BadgeCheck, ExternalLink, Key, Clock, Archive, ChevronDown, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { TrustTierBadge } from "@/components/TrustTierBadge";
 import type { TrustLevel } from "@/lib/trust-ladder";
 
@@ -28,21 +30,34 @@ interface ProofAsset {
   proofAssetCommitment: string;
   issuerDid: string;
   partnerId: string | null;
+  subjectBinding: string | null;
   proofFormat: string;
   proofDigest: string;
   digestAlg: string;
+  proofUri: string | null;
   constraintHash: string;
+  constraintCid: string | null;
   policyHash: string;
   policyCid: string;
   circuitOrSchemaId: string | null;
+  circuitCid: string | null;
+  schemaCid: string | null;
+  contentCids: string[] | null;
+  license: Record<string, unknown> | null;
   statusListUrl: string;
+  statusListIndex: string;
   statusPurpose: string;
+  attestations: Record<string, unknown> | null;
+  auditCid: string | null;
+  verificationStatus: string | null;
+  verificationAlgorithm: string | null;
+  verificationPublicKeyDigest: string | null;
+  verificationTimestamp: string | null;
+  verificationMetadata: Record<string, unknown> | null;
+  verifierProofRef: string | null;
   ttlSeconds: number | null;
   expiresAt: string | null;
   createdAt: string;
-  verificationStatus: string | null;
-  verificationMetadata: Record<string, unknown> | null;
-  attestations: Record<string, unknown> | null;
 }
 
 interface Policy {
@@ -60,6 +75,41 @@ interface Policy {
 function FpShort({ value, len = 16 }: { value: string | null | undefined; len?: number }) {
   if (!value) return <span className="text-muted-foreground italic">—</span>;
   return <code className="text-xs font-mono">{value.substring(0, len)}…</code>;
+}
+
+// Decode a JWS/JWT payload without verifying the signature (public inspection only).
+// The actual crypto verification happens via regulator-side WASM verifier in Phase 7.5.
+function decodeJwsPayload(jws: string): Record<string, unknown> | null {
+  try {
+    const parts = jws.split(".");
+    if (parts.length !== 3) return null;
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+}
+
+function JwsInspector({ jws }: { jws: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const payload = decodeJwsPayload(jws);
+  return (
+    <div className="space-y-2">
+      <Button variant="ghost" size="sm" className="h-7 gap-1" onClick={() => setExpanded((x) => !x)}>
+        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        {expanded ? "Collapse" : "Decode payload (no signature verification)"}
+      </Button>
+      {expanded && (
+        <pre className="overflow-x-auto rounded-md border bg-muted/30 p-3 text-xs">
+          {payload ? JSON.stringify(payload, null, 2) : <em>Could not decode JWS payload.</em>}
+        </pre>
+      )}
+      <div className="text-xs text-muted-foreground">
+        Raw JWS (<span className="font-mono">{jws.length}</span> chars, 3 segments): <FpShort value={jws} len={48} />
+      </div>
+    </div>
+  );
 }
 
 export default function PublicVerify() {
@@ -120,10 +170,10 @@ export default function PublicVerify() {
               <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-sm md:grid-cols-2">
                 <div>
                   <dt className="text-muted-foreground">Asset ID</dt>
-                  <dd className="font-mono text-xs">{asset.data.proofAssetId}</dd>
+                  <dd className="font-mono text-xs break-all">{asset.data.proofAssetId}</dd>
                 </div>
                 <div>
-                  <dt className="text-muted-foreground">Status</dt>
+                  <dt className="text-muted-foreground">Verification status</dt>
                   <dd>
                     <Badge variant={asset.data.verificationStatus === "verified" ? "default" : "outline"}>
                       {asset.data.verificationStatus ?? "pending"}
@@ -131,7 +181,7 @@ export default function PublicVerify() {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-muted-foreground">Format</dt>
+                  <dt className="text-muted-foreground">Proof format</dt>
                   <dd className="font-mono">{asset.data.proofFormat}</dd>
                 </div>
                 <div>
@@ -143,12 +193,32 @@ export default function PublicVerify() {
                   <dd className="truncate font-mono text-xs">{asset.data.issuerDid}</dd>
                 </div>
                 <div>
-                  <dt className="text-muted-foreground">Circuit</dt>
+                  <dt className="text-muted-foreground">Verifier partner</dt>
+                  <dd className="font-mono text-xs">{asset.data.partnerId ?? "—"}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Subject binding</dt>
+                  <dd className="font-mono text-xs">{asset.data.subjectBinding ?? <span className="italic text-muted-foreground">n/a</span>}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Circuit / schema</dt>
                   <dd className="font-mono">{asset.data.circuitOrSchemaId ?? "—"}</dd>
                 </div>
                 <div>
                   <dt className="text-muted-foreground">Created</dt>
                   <dd className="font-mono text-xs">{new Date(asset.data.createdAt).toLocaleString()}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Verified at</dt>
+                  <dd className="font-mono text-xs">
+                    {asset.data.verificationTimestamp ? new Date(asset.data.verificationTimestamp).toLocaleString() : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">TTL</dt>
+                  <dd className="font-mono">
+                    {asset.data.ttlSeconds ? `${(asset.data.ttlSeconds / 86400).toFixed(0)}d` : "—"}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-muted-foreground">Expires</dt>
@@ -181,13 +251,127 @@ export default function PublicVerify() {
                   <dt className="text-muted-foreground">Constraint hash</dt>
                   <dd><FpShort value={asset.data.constraintHash} len={48} /></dd>
                 </div>
+                {asset.data.constraintCid && (
+                  <div className="flex items-start justify-between gap-4">
+                    <dt className="text-muted-foreground">Constraint CID</dt>
+                    <dd><FpShort value={asset.data.constraintCid} len={48} /></dd>
+                  </div>
+                )}
                 <div className="flex items-start justify-between gap-4">
                   <dt className="text-muted-foreground">Policy hash</dt>
                   <dd><FpShort value={asset.data.policyHash} len={48} /></dd>
                 </div>
+                <div className="flex items-start justify-between gap-4">
+                  <dt className="text-muted-foreground">Policy CID</dt>
+                  <dd><FpShort value={asset.data.policyCid} len={48} /></dd>
+                </div>
+                {asset.data.circuitCid && (
+                  <div className="flex items-start justify-between gap-4">
+                    <dt className="text-muted-foreground">Circuit CID</dt>
+                    <dd><FpShort value={asset.data.circuitCid} len={48} /></dd>
+                  </div>
+                )}
+                {asset.data.schemaCid && (
+                  <div className="flex items-start justify-between gap-4">
+                    <dt className="text-muted-foreground">Schema CID</dt>
+                    <dd><FpShort value={asset.data.schemaCid} len={48} /></dd>
+                  </div>
+                )}
+                {asset.data.auditCid && (
+                  <div className="flex items-start justify-between gap-4">
+                    <dt className="text-muted-foreground">Audit CID</dt>
+                    <dd><FpShort value={asset.data.auditCid} len={48} /></dd>
+                  </div>
+                )}
+                {asset.data.contentCids && asset.data.contentCids.length > 0 && (
+                  <div>
+                    <dt className="text-muted-foreground mb-1">Content CIDs</dt>
+                    <dd className="space-y-1">
+                      {asset.data.contentCids.map((c, i) => (
+                        <div key={i}><FpShort value={c} len={48} /></div>
+                      ))}
+                    </dd>
+                  </div>
+                )}
               </dl>
             </CardContent>
           </Card>
+
+          {(asset.data.verifierProofRef || asset.data.verificationAlgorithm || asset.data.verificationPublicKeyDigest) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Key className="h-5 w-5 text-primary" />
+                  Verifier proof reference
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {asset.data.verificationAlgorithm && (
+                  <div className="text-sm">
+                    <span className="text-muted-foreground">Algorithm: </span>
+                    <code className="font-mono">{asset.data.verificationAlgorithm}</code>
+                  </div>
+                )}
+                {asset.data.verificationPublicKeyDigest && (
+                  <div className="text-sm">
+                    <span className="text-muted-foreground">Verifier pubkey digest: </span>
+                    <FpShort value={asset.data.verificationPublicKeyDigest} len={40} />
+                  </div>
+                )}
+                {asset.data.verifierProofRef && (
+                  <div className="text-sm">
+                    <div className="mb-2 text-muted-foreground">JWS receipt (decoded for inspection; cryptographic verification is out-of-band):</div>
+                    <JwsInspector jws={asset.data.verifierProofRef} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {(asset.data.attestations || asset.data.verificationMetadata) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Archive className="h-5 w-5 text-primary" />
+                  Attestations + verification metadata
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {asset.data.attestations && (
+                  <div>
+                    <div className="mb-1 text-sm text-muted-foreground">Attestations (NFC / device / liveness signals — hashes only, no PII)</div>
+                    <pre className="overflow-x-auto rounded-md border bg-muted/30 p-3 text-xs">
+                      {JSON.stringify(asset.data.attestations, null, 2)}
+                    </pre>
+                  </div>
+                )}
+                {asset.data.verificationMetadata && (
+                  <div>
+                    <div className="mb-1 text-sm text-muted-foreground">Verification metadata (trust tier + bindings summary)</div>
+                    <pre className="overflow-x-auto rounded-md border bg-muted/30 p-3 text-xs">
+                      {JSON.stringify(asset.data.verificationMetadata, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {asset.data.license && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <FileText className="h-5 w-5 text-primary" />
+                  License
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <pre className="overflow-x-auto rounded-md border bg-muted/30 p-3 text-xs">
+                  {JSON.stringify(asset.data.license, null, 2)}
+                </pre>
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>
@@ -230,13 +414,13 @@ export default function PublicVerify() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <dl className="text-sm space-y-1">
+              <dl className="text-sm space-y-2">
                 <div className="flex gap-2">
-                  <dt className="text-muted-foreground">Purpose:</dt>
+                  <dt className="text-muted-foreground shrink-0 w-28">Purpose</dt>
                   <dd><code>{asset.data.statusPurpose}</code></dd>
                 </div>
                 <div className="flex gap-2">
-                  <dt className="text-muted-foreground">URL:</dt>
+                  <dt className="text-muted-foreground shrink-0 w-28">URL</dt>
                   <dd className="truncate">
                     <a
                       href={asset.data.statusListUrl}
@@ -246,6 +430,12 @@ export default function PublicVerify() {
                     >
                       {asset.data.statusListUrl} <ExternalLink className="h-3 w-3" />
                     </a>
+                  </dd>
+                </div>
+                <div className="flex gap-2">
+                  <dt className="text-muted-foreground shrink-0 w-28">Bit index</dt>
+                  <dd className="font-mono">
+                    {asset.data.statusListIndex} <span className="text-muted-foreground text-xs">(position in the W3C bitstring)</span>
                   </dd>
                 </div>
               </dl>
