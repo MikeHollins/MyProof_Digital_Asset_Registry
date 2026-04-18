@@ -183,13 +183,51 @@ export class RekorEd25519NotSupportedError extends Error {
   }
 }
 
+// REKOR_URL allowlist — block trust-laundering attacks via attacker-controlled env var.
+const REKOR_URL_ALLOWLIST: ReadonlySet<string> = new Set([
+  "rekor.sigstore.dev",
+]);
+
+function getValidatedRekorUrl(): string {
+  const raw = process.env.REKOR_URL ?? "https://rekor.sigstore.dev";
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`REKOR_URL is not a valid URL: ${raw}`);
+  }
+  if (url.protocol !== "https:") {
+    throw new Error(`REKOR_URL must use https; got ${url.protocol}`);
+  }
+  if (!REKOR_URL_ALLOWLIST.has(url.hostname)) {
+    throw new Error(`REKOR_URL host ${url.hostname} not on allowlist`);
+  }
+  return url.origin;
+}
+
+// Minimal shape contract for Rekor responses. Unknown fields are ignored safely.
+interface RekorV1EntryBody {
+  verification?: {
+    inclusionProof?: unknown;
+  };
+}
+type RekorV1Response = Record<string, RekorV1EntryBody>;
+
+interface RekorV2Response {
+  uuid?: string;
+  logIndex?: number;
+  verification?: {
+    inclusionProof?: unknown;
+  };
+}
+
 export async function publishToRekor(params: {
   payloadSha256Hex: string;
   signatureB64: string;
   publicKeyPem: string;
   signerAlgorithm: "Ed25519" | "ECDSA" | "RSA";
 }): Promise<RekorResult> {
-  const REKOR_URL = process.env.REKOR_URL ?? "https://rekor.sigstore.dev";
+  const REKOR_URL = getValidatedRekorUrl();
   const API_VERSION = process.env.REKOR_API_VERSION ?? "v1";
   const path = API_VERSION === "v2" ? "/api/v2/log/entries" : "/api/v1/log/entries";
 
@@ -232,18 +270,27 @@ export async function publishToRekor(params: {
     if (!res.ok) {
       throw new Error(`Rekor HTTP ${res.status}: ${(await res.text()).substring(0, 300)}`);
     }
-    const body = await res.json() as any;
-    // v1 response: { <uuid>: { body, verification, ... } }
-    // v2 response: flatter object with uuid field.
+    const json = await res.json() as unknown;
     let logId: string;
     let inclusionProof: unknown = null;
     if (API_VERSION === "v1") {
-      const uuid = Object.keys(body)[0];
+      // v1: { <uuid>: { body, verification } }
+      if (!json || typeof json !== "object" || Array.isArray(json)) {
+        throw new Error("Rekor v1 response: expected object, got " + typeof json);
+      }
+      const v1 = json as RekorV1Response;
+      const uuid = Object.keys(v1)[0];
+      if (!uuid) throw new Error("Rekor v1 response missing entry UUID");
       logId = uuid;
-      inclusionProof = body[uuid]?.verification?.inclusionProof ?? null;
+      inclusionProof = v1[uuid]?.verification?.inclusionProof ?? null;
     } else {
-      logId = body.uuid ?? body.logIndex?.toString() ?? Object.keys(body)[0];
-      inclusionProof = body.verification?.inclusionProof ?? null;
+      if (!json || typeof json !== "object") {
+        throw new Error("Rekor v2 response: expected object");
+      }
+      const v2 = json as RekorV2Response;
+      logId = v2.uuid ?? (typeof v2.logIndex === "number" ? v2.logIndex.toString() : "");
+      if (!logId) throw new Error("Rekor v2 response missing uuid/logIndex");
+      inclusionProof = v2.verification?.inclusionProof ?? null;
     }
     return { log_id: String(logId), inclusion_proof: inclusionProof };
   } finally {

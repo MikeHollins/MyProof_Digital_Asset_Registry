@@ -15,11 +15,17 @@
 // round-tripping to MyProof.
 
 import type { Express, Request, Response } from "express";
+import { timingSafeEqual } from "crypto";
 import { desc, eq } from "drizzle-orm";
 import { db } from "./db.js";
 import { epochRoots } from "../shared/schema.js";
 import { safeError } from "./middleware/log-redactor.js";
 import { publishEpoch } from "./cron/epoch-publisher.js";
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+}
 
 export function registerTransparencyRoutes(app: Express): void {
 
@@ -101,8 +107,8 @@ export function registerTransparencyRoutes(app: Express): void {
   // PUBLIC: paginated list
   // ---------------------------------------------------------------------
   app.get("/api/transparency/epochs", async (req: Request, res: Response) => {
-    const limitRaw = Number.parseInt(String((req.query as any)?.limit ?? "50"), 10);
-    const offsetRaw = Number.parseInt(String((req.query as any)?.offset ?? "0"), 10);
+    const limitRaw = Number.parseInt(String(req.query.limit ?? "50"), 10);
+    const offsetRaw = Number.parseInt(String(req.query.offset ?? "0"), 10);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
     const offset = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
     try {
@@ -150,7 +156,7 @@ export function registerTransparencyRoutes(app: Express): void {
     const provided = auth?.startsWith("Bearer ")
       ? auth.slice(7)
       : (req.headers["x-cron-secret"] as string | undefined);
-    if (!provided || provided !== expected) {
+    if (!provided || !constantTimeEqual(provided, expected)) {
       return res.status(403).json({ ok: false, error: "CRON_SECRET_INVALID" });
     }
     try {

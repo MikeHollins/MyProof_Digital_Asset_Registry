@@ -17,12 +17,11 @@
 // the same window becomes a no-op if the N+1 row already exists.
 
 import { createHash } from "crypto";
-import { asc, desc, gt } from "drizzle-orm";
+import { asc, desc, eq, gt } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   auditEvents,
   epochRoots,
-  type InsertEpochRoot,
   type Rfc3161Token,
 } from "../../shared/schema.js";
 import {
@@ -74,8 +73,15 @@ export async function publishEpoch(signer?: Signer): Promise<PublishResult> {
     : db.select().from(auditEvents).orderBy(asc(auditEvents.timestamp));
   const events = await eventsQuery;
 
-  // 3. Merkle root over event_hash values.
-  const leaves = events.map((e) => Buffer.from(e.eventHash, "hex"));
+  // 3. Merkle root over event_hash values. Guard against non-hex event_hash:
+  // Buffer.from(..., "hex") silently truncates on invalid input, which would
+  // produce a wrong Merkle root without any error signal.
+  const leaves = events.map((e) => {
+    if (!/^[0-9a-f]{64}$/i.test(e.eventHash)) {
+      throw new Error(`event ${e.eventId} has malformed event_hash (not 64 hex): length=${e.eventHash.length}`);
+    }
+    return Buffer.from(e.eventHash, "hex");
+  });
   const merkleRoot = computeMerkleRoot(leaves);
   const treeSize = events.length;
 
@@ -158,27 +164,48 @@ export async function publishEpoch(signer?: Signer): Promise<PublishResult> {
     throw new Error("All external anchors failed — refusing to record epoch");
   }
 
-  // 6. Insert epoch row.
-  const toInsert: Omit<InsertEpochRoot, "publishedAt" | "epochId"> = {
-    epochNumber: nextEpochNumber,
-    merkleRoot,
-    treeSize,
-    previousEpochHash: previousEpochCanonicalHash,
-    signerFingerprint: activeSigner.fingerprint(),
-    signerAlgorithm: activeSigner.algorithm(),
-    signatureEd25519: signatureB64Url,
-    signatureMlDsa: null,
-    rfc3161Tokens,
-    rekorLogId,
-    rekorInclusionProof: rekorInclusionProof as any,
-    r2BackupKey,
-    anchorStatus,
-  };
-
-  const inserted = await db.insert(epochRoots).values({
-    ...toInsert,
-    publishedAt,
-  } as any).returning();
+  // 6. Insert epoch row. Idempotent on duplicate-key (PG 23505): a second cron
+  // firing for the same epoch_number is treated as a no-op success.
+  let inserted: { epochId: string }[];
+  try {
+    inserted = await db.insert(epochRoots).values({
+      epochNumber: nextEpochNumber,
+      merkleRoot,
+      treeSize,
+      previousEpochHash: previousEpochCanonicalHash,
+      signerFingerprint: activeSigner.fingerprint(),
+      signerPublicKeyPem: activeSigner.publicKeyPem(),
+      signerAlgorithm: activeSigner.algorithm(),
+      signatureEd25519: signatureB64Url,
+      signatureMlDsa: null,
+      rfc3161Tokens,
+      rekorLogId,
+      rekorInclusionProof: rekorInclusionProof as unknown,
+      r2BackupKey,
+      anchorStatus,
+      publishedAt,
+    }).returning({ epochId: epochRoots.epochId });
+  } catch (err) {
+    // Postgres SQLSTATE 23505 = unique_violation. A concurrent cron trigger
+    // already inserted this epoch_number. Return the existing row.
+    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "23505") {
+      safeLog("[EPOCH_PUBLISH_IDEMPOTENT]", { epoch_number: nextEpochNumber });
+      const existing = await db.select({ epochId: epochRoots.epochId, merkleRoot: epochRoots.merkleRoot, treeSize: epochRoots.treeSize })
+        .from(epochRoots)
+        .where(eq(epochRoots.epochNumber, nextEpochNumber))
+        .limit(1);
+      if (existing.length > 0) {
+        return {
+          epoch_id: existing[0].epochId,
+          epoch_number: nextEpochNumber,
+          merkle_root: existing[0].merkleRoot,
+          tree_size: existing[0].treeSize,
+          anchor_status: { idempotent: "ok" },
+        };
+      }
+    }
+    throw err;
+  }
 
   safeLog("[EPOCH_PUBLISHED]", {
     epoch_number: nextEpochNumber,

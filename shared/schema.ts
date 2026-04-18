@@ -226,6 +226,7 @@ export const epochRoots = pgTable("epoch_roots", {
   treeSize: integer("tree_size").notNull(), // Number of audit events included at this root
   previousEpochHash: text("previous_epoch_hash"), // Hex SHA-256 of previous epoch_number+merkle_root+timestamp; null for epoch 1
   signerFingerprint: text("signer_fingerprint").notNull(), // SHA-256 prefix of signing pubkey (PEM)
+  signerPublicKeyPem: text("signer_public_key_pem").notNull().default(""), // Full SPKI PEM — enables independent offline verification
   signerAlgorithm: text("signer_algorithm").notNull().default("Ed25519"), // Upgrade path: ML-DSA-65 co-sign
   signatureEd25519: text("signature_ed25519").notNull(), // Base64url Ed25519 signature over canonical epoch bytes
   signatureMlDsa: text("signature_ml_dsa"), // Phase 5+ PQ co-signature slot; null in Phase 2
@@ -405,6 +406,7 @@ export const insertEpochRootSchema = createInsertSchema(epochRoots, {
   merkleRoot: z.string().regex(/^[0-9a-f]{64}$/),
   treeSize: z.number().int().min(0),
   signerFingerprint: z.string().min(8).max(128),
+  signerPublicKeyPem: z.string().min(1),
   signatureEd25519: z.string().min(1),
   rfc3161Tokens: z.array(rfc3161TokenSchema),
   anchorStatus: z.record(z.enum(["ok", "failed", "unavailable"])),
