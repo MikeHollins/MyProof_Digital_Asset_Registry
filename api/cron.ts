@@ -1,10 +1,10 @@
-/// <reference path="./dist-types.d.ts" />
+import { cleanupExpiredJti } from "./_bootstrap.js";
 import type { Request, Response } from "express";
 
 /**
  * Vercel Cron Job endpoint for JTI cleanup.
  * Replaces the setInterval-based cleanup that runs in long-running process mode.
- * 
+ *
  * Configured in vercel.json: runs every 5 minutes.
  * Only accepts requests from Vercel's cron scheduler (User-Agent: vercel-cron/1.0).
  */
@@ -16,7 +16,6 @@ export default async function handler(req: Request, res: Response) {
     }
 
     try {
-        const { cleanupExpiredJti } = await import("../dist/index.js");
         await cleanupExpiredJti();
 
         return res.status(200).json({

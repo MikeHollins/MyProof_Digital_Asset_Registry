@@ -1,5 +1,4 @@
-/// <reference path="./dist-types.d.ts" />
-import { app, initApp } from "../dist/index.js";
+import { app, initApp } from "./_bootstrap.js";
 import type { Request, Response } from "express";
 
 export default async function handler(req: Request, res: Response) {
