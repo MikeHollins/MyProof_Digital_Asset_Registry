@@ -1,3 +1,4 @@
+/// <reference path="./dist-types.d.ts" />
 import { app, initApp } from "../dist/index.js";
 import type { Request, Response } from "express";
 

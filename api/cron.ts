@@ -1,3 +1,4 @@
+/// <reference path="./dist-types.d.ts" />
 import type { Request, Response } from "express";
 
 /**
