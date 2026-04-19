@@ -1,0 +1,115 @@
+name: Production Smoke Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+  push:
+    branches:
+      - main
+
+jobs:
+  smoke:
+    name: par.myproof.ai production smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify SPA root serves HTML
+        run: |
+          echo "Fetching https://par.myproof.ai/ ..."
+          HTTP_CODE=$(curl -s -o /tmp/root.html -w "%{http_code}" https://par.myproof.ai/)
+          CONTENT_TYPE=$(curl -sI https://par.myproof.ai/ | grep -i '^content-type:' | tr -d '\r' | awk '{print tolower($2)}')
+
+          echo "HTTP code: $HTTP_CODE"
+          echo "Content-Type: $CONTENT_TYPE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL: root returned $HTTP_CODE, expected 200"
+            exit 1
+          fi
+
+          if [[ "$CONTENT_TYPE" != text/html* ]]; then
+            echo "FAIL: root returned content-type '$CONTENT_TYPE', expected text/html"
+            echo "This indicates the Vercel deploy is serving the server bundle instead of the SPA."
+            exit 1
+          fi
+
+          if ! grep -q '<div id="root">' /tmp/root.html; then
+            echo "FAIL: root HTML does not contain <div id=\"root\">; SPA scaffold is missing"
+            head -20 /tmp/root.html
+            exit 1
+          fi
+
+          echo "PASS: SPA root serves HTML with React mount point"
+
+      - name: Verify health endpoint responds
+        run: |
+          echo "Fetching https://par.myproof.ai/api/health ..."
+          HTTP_CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" https://par.myproof.ai/api/health)
+          CONTENT_TYPE=$(curl -sI https://par.myproof.ai/api/health | grep -i '^content-type:' | tr -d '\r' | awk '{print tolower($2)}')
+
+          echo "HTTP code: $HTTP_CODE"
+          echo "Content-Type: $CONTENT_TYPE"
+          cat /tmp/health.json
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL: /api/health returned $HTTP_CODE, expected 200"
+            exit 1
+          fi
+
+          if [[ "$CONTENT_TYPE" != application/json* ]]; then
+            echo "FAIL: /api/health returned content-type '$CONTENT_TYPE', expected application/json"
+            exit 1
+          fi
+
+          echo "PASS: /api/health responds with JSON"
+
+      - name: Verify known proof asset lookup
+        run: |
+          PROOF_ID="9fa045ee-66cb-435f-9300-716ab7605582"
+          echo "Fetching https://par.myproof.ai/api/proof-assets/$PROOF_ID ..."
+          HTTP_CODE=$(curl -s -o /tmp/proof.json -w "%{http_code}" "https://par.myproof.ai/api/proof-assets/$PROOF_ID")
+
+          echo "HTTP code: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL: proof asset lookup returned $HTTP_CODE, expected 200"
+            cat /tmp/proof.json
+            exit 1
+          fi
+
+          if ! grep -q '"proofAssetId"' /tmp/proof.json; then
+            echo "FAIL: response missing proofAssetId field"
+            cat /tmp/proof.json
+            exit 1
+          fi
+
+          echo "PASS: known proof asset $PROOF_ID returns valid JSON with proofAssetId"
+
+      - name: Verify favicon is MyProof shield
+        run: |
+          echo "Fetching https://par.myproof.ai/favicon.png ..."
+          HTTP_CODE=$(curl -s -o /tmp/favicon.png -w "%{http_code}" https://par.myproof.ai/favicon.png)
+          CONTENT_TYPE=$(curl -sI https://par.myproof.ai/favicon.png | grep -i '^content-type:' | tr -d '\r' | awk '{print tolower($2)}')
+          SIZE=$(stat -c '%s' /tmp/favicon.png 2>/dev/null || stat -f '%z' /tmp/favicon.png)
+
+          echo "HTTP code: $HTTP_CODE"
+          echo "Content-Type: $CONTENT_TYPE"
+          echo "Size: $SIZE bytes"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL: favicon returned $HTTP_CODE"
+            exit 1
+          fi
+
+          if [[ "$CONTENT_TYPE" != image/png* ]]; then
+            echo "FAIL: favicon content-type '$CONTENT_TYPE', expected image/png"
+            exit 1
+          fi
+
+          if [ "$SIZE" -lt 500 ]; then
+            echo "FAIL: favicon is only $SIZE bytes; MyProof shield is ~2200 bytes"
+            echo "This may indicate the Replit-logo favicon regression."
+            exit 1
+          fi
+
+          echo "PASS: favicon serves as image/png at $SIZE bytes"
