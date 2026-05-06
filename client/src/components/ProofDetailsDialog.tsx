@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { ProofFormatBadge } from "./ProofFormatBadge";
 import { StatusBadge } from "./StatusBadge";
 import { CidDisplay } from "./CidDisplay";
+import { extractV2VerificationMetadata } from "@/lib/v2VerificationMetadata";
 import type { ProofAsset } from "@shared/schema";
 
 interface ProofDetailsDialogProps {
@@ -52,6 +53,12 @@ export function ProofDetailsDialog({
   };
 
   const metadata = proof.verificationMetadata as any;
+
+  // V2H.8: V2 STRONG mints (post-V2H.7) carry `doc_commitment_hex` and
+  // `circuit_version` inside `verification_metadata`. The narrowing helper
+  // returns null for V1 STRONG, FAST, and any malformed input — the section
+  // below auto-hides in those cases.
+  const v2Metadata = extractV2VerificationMetadata(metadata);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -401,6 +408,43 @@ export function ProofDetailsDialog({
                         <CidDisplay value={proof.auditCid} truncateLength={999} />
                       </div>
                     )}
+                  </div>
+                </section>
+              </>
+            )}
+
+            {/* V2H.8: V2 STRONG Verification Metadata.
+                Auto-hides for V1 STRONG and FAST mints (no v2 metadata in JSONB).
+                doc_commitment_hex displays via CidDisplay (truncated + tooltip
+                + copy button — same pattern as the Proof Commitment field
+                above). circuit_version renders as a labeled badge. */}
+            {v2Metadata && (
+              <>
+                <Separator />
+                <section data-testid="section-verification-metadata">
+                  <h3 className="text-sm font-semibold mb-3">Verification Metadata</h3>
+                  <div className="space-y-3">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">
+                        Document Commitment (SHA-256)
+                      </Label>
+                      <div className="mt-1">
+                        <CidDisplay
+                          value={v2Metadata.doc_commitment_hex}
+                          truncateLength={32}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">
+                        Circuit Version
+                      </Label>
+                      <div className="mt-1">
+                        <Badge variant="outline" data-testid="badge-circuit-version">
+                          v{v2Metadata.circuit_version}
+                        </Badge>
+                      </div>
+                    </div>
                   </div>
                 </section>
               </>
