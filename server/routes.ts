@@ -618,6 +618,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // expiresAt computed by Postgres: created_at + ttl_seconds (one clock, zero drift)
 
       // GAP 9: Wrap insert in 23505-safe try-catch for concurrent insert race condition
+      // V2H.7: V2 STRONG mints carry `verification_metadata` with the journal's
+      // doc_commitment_hex + circuit_version. The validator at L512 narrows to
+      // the V2-strong variant when those fields are present and fully populated.
+      // For FAST and V1 STRONG mints `verification_metadata` is absent — the
+      // base variant matches and `v2VerificationMetadata` is undefined.
+      //
+      // We merge V2 metadata into the existing JWS-derived `derivedFacts` so the
+      // persisted JSONB column is a single object containing everything PAR
+      // knows about this mint's verification — JWS facts (issuer/audience/etc)
+      // alongside V2 cryptographic record (doc_commitment_hex/circuit_version).
+      const v2VerificationMetadata = "verification_metadata" in body
+        ? body.verification_metadata
+        : undefined;
+      const persistedVerificationMetadata = v2VerificationMetadata
+        ? { ...verification.derivedFacts, ...v2VerificationMetadata }
+        : verification.derivedFacts;
+
       let proof;
       try {
         proof = await storage.createProofAsset({
@@ -644,7 +661,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           verificationAlgorithm: verification.algorithm,
           verificationPublicKeyDigest: verification.publicKeyDigest,
           verificationTimestamp: verification.verifiedAt ? new Date(verification.verifiedAt) : new Date(),
-          verificationMetadata: verification.derivedFacts,
+          verificationMetadata: persistedVerificationMetadata,
           verifierProofRef,
           ttlSeconds,
         });

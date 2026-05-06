@@ -322,7 +322,28 @@ export const verifierProofRefSchema = z.object({
   digest_alg: digestAlgEnum,
 });
 
-export const insertProofAssetSchema = createInsertSchema(proofAssets, {
+/**
+ * V2H.7: V2 STRONG-tier verification metadata. The V2 STARK journal carries
+ * the full 256-bit `doc_commitment` (8 u32 words rendered as 64-char zero-
+ * padded big-endian hex) plus the numeric `circuit_version`. PAR persists
+ * this in the `proof_assets.verification_metadata` JSONB column so
+ * transparency views can display the canonical document fingerprint and
+ * circuit version that produced the proof.
+ *
+ * The schema captures the V2-STRONG invariant directly: BOTH inner fields
+ * are required — there is no "half-V2" mint shape. (See W24 at the bottom
+ * of `plans/v2h-executor-ready-v1.3.md` for the post-V2H.10 cleanup that
+ * extends this discriminated-union pattern across the rest of the mint
+ * schema.)
+ */
+export const v2VerificationMetadataSchema = z.object({
+  doc_commitment_hex: z.string().regex(/^[0-9a-f]{64}$/, "doc_commitment_hex must be 64 lowercase hex chars"),
+  circuit_version: z.number().int().positive(),
+});
+
+export type V2VerificationMetadata = z.infer<typeof v2VerificationMetadataSchema>;
+
+const baseInsertProofAssetSchema = createInsertSchema(proofAssets, {
   proofFormat: proofFormatEnum,
   digestAlg: digestAlgEnum,
   subjectBinding: z.string().optional(),
@@ -352,6 +373,35 @@ export const insertProofAssetSchema = createInsertSchema(proofAssets, {
 }).extend({
   verifier_proof_ref: verifierProofRefSchema,
 });
+
+/**
+ * V2 STRONG mint variant — `verification_metadata` is REQUIRED (not optional)
+ * because every V2 STRONG mint produces a journal whose `doc_commitment` and
+ * `circuit_version` are part of the cryptographic record. A V2 STRONG mint
+ * arriving without this metadata is a wire-shape regression and is rejected.
+ */
+export const insertProofAssetV2StrongSchema = baseInsertProofAssetSchema.extend({
+  verification_metadata: v2VerificationMetadataSchema,
+});
+
+/**
+ * Mint request validator. Accepts EITHER:
+ *   - V2 STRONG mints, which carry `verification_metadata` with both inner
+ *     fields fully populated (`insertProofAssetV2StrongSchema`).
+ *   - All other mints (FAST, V1 STRONG), which carry no V2 metadata
+ *     (`baseInsertProofAssetSchema`).
+ *
+ * Zod tries each variant and accepts the first that validates. There is no
+ * `optional` field on the V2 metadata at any level — when the V2 metadata
+ * is present it must be complete; when it is absent the request is matched
+ * by the base variant. This is the narrow-scope cleanup of W24 applied just
+ * to the new field; the broader optional-fields cleanup on the rest of the
+ * mint schema is deferred to a post-V2H.10 phase per the plan.
+ */
+export const insertProofAssetSchema = z.union([
+  insertProofAssetV2StrongSchema,
+  baseInsertProofAssetSchema,
+]);
 
 export const insertAuditEventSchema = createInsertSchema(auditEvents).omit({
   eventId: true,
